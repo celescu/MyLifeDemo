@@ -23,7 +23,7 @@ from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 import anthropic
 
-DB_PATH = os.path.join(os.path.dirname(__file__), "memoria.db")
+DB_PATH = os.environ.get("DB_PATH", os.path.join(os.path.dirname(__file__), "memoria.db"))
 MODEL = "claude-sonnet-4-6"
 
 # Usuario y contraseña para proteger el acceso a toda la app una vez esté
