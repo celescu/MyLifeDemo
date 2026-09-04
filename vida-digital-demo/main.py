@@ -13,21 +13,53 @@ Para el demo, hay un único usuario fijo ("yo") para simplificar.
 import os
 import sqlite3
 import json
+import secrets
 from datetime import datetime
 from contextlib import contextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 import anthropic
 
 DB_PATH = os.path.join(os.path.dirname(__file__), "memoria.db")
 MODEL = "claude-sonnet-4-6"
 
+# Usuario y contraseña para proteger el acceso a toda la app una vez esté
+# publicada en internet. Se leen de variables de entorno; si no existen,
+# la app no arranca protegida (solo pensado para uso local en tu propio PC).
+APP_USER = os.environ.get("APP_USER")
+APP_PASSWORD = os.environ.get("APP_PASSWORD")
+
 client = anthropic.Anthropic()  # usa la variable de entorno ANTHROPIC_API_KEY
 
 app = FastAPI()
+
+
+@app.middleware("http")
+async def proteger_con_password(request: Request, call_next):
+    # Si no se han configurado APP_USER/APP_PASSWORD, no se aplica protección
+    # (esto es lo que pasa ahora mismo en tu PC local).
+    if not APP_USER or not APP_PASSWORD:
+        return await call_next(request)
+
+    auth = request.headers.get("Authorization")
+    if auth:
+        try:
+            tipo, credenciales = auth.split(" ", 1)
+            import base64
+            usuario, password = base64.b64decode(credenciales).decode().split(":", 1)
+            if tipo == "Basic" and secrets.compare_digest(usuario, APP_USER) and secrets.compare_digest(password, APP_PASSWORD):
+                return await call_next(request)
+        except Exception:
+            pass
+
+    return Response(
+        status_code=401,
+        headers={"WWW-Authenticate": "Basic"},
+        content="Acceso restringido",
+    )
 
 SYSTEM_PROMPT_ENTREVISTA = """Eres una entrevistadora biográfica cálida, curiosa y paciente.
 Tu objetivo es ayudar a la persona a contar su vida con el máximo detalle posible,
