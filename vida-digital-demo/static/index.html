@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>Mi vida — demo</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 700px; margin: 40px auto; padding: 0 16px; }
+  #chat { border: 1px solid #ddd; border-radius: 8px; padding: 16px; min-height: 300px; margin-bottom: 12px; }
+  .msg { margin-bottom: 14px; line-height: 1.4; }
+  .user { color: #1a1a1a; font-weight: 600; }
+  .ia { color: #4a4a4a; }
+  textarea { width: 100%; box-sizing: border-box; padding: 8px; font-size: 15px; }
+  button { padding: 8px 14px; margin-top: 8px; margin-right: 8px; cursor: pointer; }
+  #memoria { white-space: pre-wrap; background: #f7f7f7; padding: 12px; border-radius: 8px; font-size: 13px; margin-top: 20px; display: none; }
+</style>
+</head>
+<body>
+  <h2>Mi vida — demo de entrevista</h2>
+  <div id="chat"></div>
+  <textarea id="input" rows="3" placeholder="Escribe tu respuesta..."></textarea><br>
+  <button onclick="enviar()">Enviar</button>
+  <button onclick="cerrarSesion()">Cerrar sesión de hoy</button>
+  <button onclick="verMemoria()">Ver memoria acumulada</button>
+  <pre id="memoria"></pre>
+
+<script>
+let sesionId = null;
+
+async function enviar() {
+  const input = document.getElementById('input');
+  const texto = input.value.trim();
+  if (!texto) return;
+  añadirMensaje('user', texto);
+  input.value = '';
+
+  const resp = await fetch('/api/mensaje', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ mensaje: texto, sesion_id: sesionId })
+  });
+  const data = await resp.json();
+  sesionId = data.sesion_id;
+  añadirMensaje('ia', data.respuesta);
+}
+
+function añadirMensaje(rol, texto) {
+  const chat = document.getElementById('chat');
+  const div = document.createElement('div');
+  div.className = 'msg ' + rol;
+  div.textContent = (rol === 'user' ? 'Tú: ' : 'Entrevistadora: ') + texto;
+  chat.appendChild(div);
+  chat.scrollTop = chat.scrollHeight;
+}
+
+async function cerrarSesion() {
+  if (!sesionId) { alert('Todavía no has empezado una sesión.'); return; }
+  const resp = await fetch('/api/cerrar_sesion', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ sesion_id: sesionId })
+  });
+  await resp.json();
+  alert('Sesión cerrada y memoria actualizada. Puedes cerrar la pestaña y volver otro día.');
+  sesionId = null;
+  document.getElementById('chat').innerHTML = '';
+}
+
+async function verMemoria() {
+  const resp = await fetch('/api/memoria');
+  const data = await resp.json();
+  const el = document.getElementById('memoria');
+  el.style.display = 'block';
+  el.textContent = JSON.stringify(data, null, 2);
+}
+
+// Mensaje inicial para arrancar la conversación
+añadirMensaje('ia', 'Escribe algo (ej. "hola") para que empiece la entrevista.');
+</script>
+</body>
+</html>
