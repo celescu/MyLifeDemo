@@ -226,6 +226,33 @@ function añadirMensaje(rol, texto) {
   chat.scrollTop = chat.scrollHeight;
 }
 
+async function cerrarSesionPorId(id, btn) {
+  const textoOriginal = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = 'Generando resumen...';
+  try {
+    const resp = await fetch('/api/cerrar_sesion', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sesion_id: id })
+    });
+    const data = await resp.json();
+    if (data.error) {
+      alert('Aviso: ' + data.error);
+      btn.disabled = false;
+      btn.textContent = textoOriginal;
+      return;
+    }
+    alert('Sesión #' + id + ' cerrada y memoria actualizada.');
+    if (sesionId === id) sesionId = null;
+    await refrescarListaSesiones();
+  } catch (e) {
+    alert('Hubo un problema al cerrar la sesión.');
+    btn.disabled = false;
+    btn.textContent = textoOriginal;
+  }
+}
+
 async function cerrarSesion(ev) {
   if (!sesionId) { alert('Todavía no has empezado una sesión.'); return; }
   const btn = ev.target;
@@ -271,28 +298,50 @@ async function verMemoria(ev) {
   }
 }
 
+async function refrescarListaSesiones() {
+  const resp = await fetch('/api/sesiones');
+  const sesiones = await resp.json();
+  const contenedor = document.getElementById('lista-sesiones');
+  contenedor.innerHTML = '<h3>Sesiones guardadas (haz clic para ver la transcripción completa)</h3>';
+  if (sesiones.length === 0) {
+    contenedor.innerHTML += '<p>Todavía no hay sesiones guardadas.</p>';
+    return;
+  }
+  sesiones.forEach(s => {
+    const div = document.createElement('div');
+    div.className = 'sesion-item';
+    const fecha = new Date(s.fecha).toLocaleString();
+
+    const texto = document.createElement('span');
+    texto.textContent = `Sesión #${s.id} — ${fecha} — ${s.num_turnos} turnos — ${s.cerrada ? 'cerrada' : 'abierta'}`;
+    texto.style.cursor = 'pointer';
+    texto.onclick = () => verTranscripcion(s.id);
+    div.appendChild(texto);
+
+    if (!s.cerrada) {
+      const btnCerrar = document.createElement('button');
+      btnCerrar.textContent = 'Cerrar esta sesión';
+      btnCerrar.style.marginLeft = '10px';
+      btnCerrar.style.fontSize = '0.75rem';
+      btnCerrar.style.padding = '4px 10px';
+      btnCerrar.onclick = (e) => {
+        e.stopPropagation();
+        cerrarSesionPorId(s.id, btnCerrar);
+      };
+      div.appendChild(btnCerrar);
+    }
+
+    contenedor.appendChild(div);
+  });
+}
+
 async function verSesiones(ev) {
   const btn = ev.target;
   const textoOriginal = btn.textContent;
   btn.disabled = true;
   btn.textContent = 'Cargando...';
   try {
-    const resp = await fetch('/api/sesiones');
-    const sesiones = await resp.json();
-    const contenedor = document.getElementById('lista-sesiones');
-    contenedor.innerHTML = '<h3>Sesiones guardadas (haz clic para ver la transcripción completa)</h3>';
-    if (sesiones.length === 0) {
-      contenedor.innerHTML += '<p>Todavía no hay sesiones guardadas.</p>';
-      return;
-    }
-    sesiones.forEach(s => {
-      const div = document.createElement('div');
-      div.className = 'sesion-item';
-      const fecha = new Date(s.fecha).toLocaleString();
-      div.textContent = `Sesión #${s.id} — ${fecha} — ${s.num_turnos} turnos — ${s.cerrada ? 'cerrada' : 'abierta'}`;
-      div.onclick = () => verTranscripcion(s.id);
-      contenedor.appendChild(div);
-    });
+    await refrescarListaSesiones();
   } finally {
     btn.disabled = false;
     btn.textContent = textoOriginal;
