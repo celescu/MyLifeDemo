@@ -179,7 +179,11 @@ async function cerrarSesion() {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ sesion_id: sesionId })
   });
-  await resp.json();
+  const data = await resp.json();
+  if (data.error) {
+    alert('Aviso: ' + data.error + '. Tu conversación no se ha perdido, pero el resumen no se actualizó esta vez. Revísalo con el desarrollador.');
+    return;
+  }
   alert('Sesión cerrada y memoria actualizada. Puedes cerrar la pestaña y volver otro día.');
   sesionId = null;
   document.getElementById('chat').innerHTML = '';
