@@ -163,6 +163,7 @@
 
 <script>
 let sesionId = null;
+let transcripcionAbiertaId = null;
 
 async function enviar() {
   const input = document.getElementById('input');
@@ -283,13 +284,19 @@ async function cerrarSesion(ev) {
 
 async function verMemoria(ev) {
   const btn = ev.target;
+  const el = document.getElementById('memoria');
+
+  if (el.style.display === 'block') {
+    el.style.display = 'none';
+    return;
+  }
+
   const textoOriginal = btn.textContent;
   btn.disabled = true;
   btn.textContent = 'Cargando...';
   try {
     const resp = await fetch('/api/memoria');
     const data = await resp.json();
-    const el = document.getElementById('memoria');
     el.style.display = 'block';
     el.textContent = JSON.stringify(data, null, 2);
   } finally {
@@ -348,15 +355,23 @@ async function verSesiones(ev) {
   }
 }
 
-async function verTranscripcion(sesionId) {
-  const resp = await fetch(`/api/sesion/${sesionId}`);
-  const mensajes = await resp.json();
+async function verTranscripcion(id) {
   const el = document.getElementById('transcripcion');
+
+  if (transcripcionAbiertaId === id) {
+    el.style.display = 'none';
+    transcripcionAbiertaId = null;
+    return;
+  }
+
+  const resp = await fetch(`/api/sesion/${id}`);
+  const mensajes = await resp.json();
   el.style.display = 'block';
   el.textContent = mensajes
     .filter(m => m.role === 'user' || m.role === 'assistant')
     .map(m => `[${m.role === 'user' ? 'TÚ' : 'IA'}] ${m.content}`)
     .join('\n\n---\n\n');
+  transcripcionAbiertaId = id;
 }
 
 // Mensaje inicial para arrancar la conversación
