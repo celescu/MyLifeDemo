@@ -264,6 +264,39 @@ def cerrar_sesion(payload: CerrarSesionIn):
     return {"resumen": nuevo_resumen}
 
 
+@app.get("/api/sesiones")
+def listar_sesiones(usuario: str = "yo"):
+    with db() as conn:
+        filas = conn.execute(
+            "SELECT id, fecha, cerrada, mensajes FROM sesiones WHERE usuario = ? ORDER BY id DESC",
+            (usuario,),
+        ).fetchall()
+    resultado = []
+    for f in filas:
+        mensajes = json.loads(f["mensajes"])
+        # contamos solo turnos reales (excluyendo el mensaje de contexto inicial)
+        num_turnos = len([m for m in mensajes if m["role"] == "assistant"])
+        resultado.append({
+            "id": f["id"],
+            "fecha": f["fecha"],
+            "cerrada": bool(f["cerrada"]),
+            "num_turnos": num_turnos,
+        })
+    return resultado
+
+
+@app.get("/api/sesion/{sesion_id}")
+def ver_sesion(sesion_id: int, usuario: str = "yo"):
+    with db() as conn:
+        row = conn.execute(
+            "SELECT mensajes FROM sesiones WHERE id = ? AND usuario = ?",
+            (sesion_id, usuario),
+        ).fetchone()
+    if not row:
+        return {"error": "sesión no encontrada"}
+    return json.loads(row["mensajes"])
+
+
 @app.get("/api/memoria")
 def ver_memoria(usuario: str = "yo"):
     return cargar_resumen(usuario)
