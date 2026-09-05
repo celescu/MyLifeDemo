@@ -251,10 +251,20 @@ def cerrar_sesion(payload: CerrarSesionIn):
         }],
     )
 
+    texto_resumen = respuesta.content[0].text.strip()
+    # a veces el modelo envuelve el JSON en un bloque de markdown pese a pedirle que no lo haga
+    if texto_resumen.startswith("```"):
+        texto_resumen = texto_resumen.split("```")[1]
+        if texto_resumen.startswith("json"):
+            texto_resumen = texto_resumen[4:]
+        texto_resumen = texto_resumen.strip()
+
     try:
-        nuevo_resumen = json.loads(respuesta.content[0].text)
-    except json.JSONDecodeError:
-        nuevo_resumen = resumen_previo  # fallback simple para el demo
+        nuevo_resumen = json.loads(texto_resumen)
+    except json.JSONDecodeError as e:
+        print(f"[AVISO] No se pudo parsear el resumen para el usuario {payload.usuario}: {e}")
+        print(f"[AVISO] Texto recibido del modelo: {texto_resumen[:500]}")
+        return {"error": "no se pudo generar el resumen esta vez, la conversación sigue guardada íntegra", "detalle": str(e)}
 
     guardar_resumen(payload.usuario, nuevo_resumen)
 
