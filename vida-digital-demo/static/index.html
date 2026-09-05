@@ -4,24 +4,138 @@
 <meta charset="UTF-8">
 <title>Mi vida — demo</title>
 <style>
-  body { font-family: system-ui, sans-serif; max-width: 700px; margin: 40px auto; padding: 0 16px; }
-  #chat { border: 1px solid #ddd; border-radius: 8px; padding: 16px; min-height: 300px; margin-bottom: 12px; }
-  .msg { margin-bottom: 14px; line-height: 1.4; }
-  .user { color: #1a1a1a; font-weight: 600; }
-  .ia { color: #4a4a4a; }
-  textarea { width: 100%; box-sizing: border-box; padding: 8px; font-size: 15px; }
-  button { padding: 8px 14px; margin-top: 8px; margin-right: 8px; cursor: pointer; }
-  #memoria { white-space: pre-wrap; background: #f7f7f7; padding: 12px; border-radius: 8px; font-size: 13px; margin-top: 20px; display: none; }
+  :root {
+    --papel: #f2e9d8;
+    --papel-oscuro: #e8dcc4;
+    --tinta: #3a3128;
+    --tinta-suave: #6b5f4f;
+    --linea: #cdbd9f;
+    --sello: #a8574a;
+    --sello-oscuro: #8c453a;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    font-family: 'Iowan Old Style', 'Palatino Linotype', Palatino, Georgia, serif;
+    background: var(--papel);
+    background-image:
+      radial-gradient(rgba(139, 115, 85, 0.05) 1px, transparent 1px);
+    background-size: 3px 3px;
+    color: var(--tinta);
+    max-width: 640px;
+    margin: 48px auto;
+    padding: 0 20px 60px;
+  }
+
+  h2 {
+    font-weight: 400;
+    font-style: italic;
+    font-size: 1.5rem;
+    color: var(--tinta-suave);
+    border-bottom: 1px solid var(--linea);
+    padding-bottom: 14px;
+    margin-bottom: 24px;
+    letter-spacing: 0.02em;
+  }
+
+  #chat {
+    background: var(--papel-oscuro);
+    border: 1px solid var(--linea);
+    border-radius: 2px;
+    box-shadow: inset 0 1px 3px rgba(90, 70, 40, 0.15);
+    padding: 20px 22px;
+    min-height: 280px;
+    margin-bottom: 16px;
+  }
+
+  .msg { margin-bottom: 16px; line-height: 1.55; font-size: 1.02rem; }
+  .msg .etiqueta {
+    display: block;
+    font-family: system-ui, sans-serif;
+    font-size: 0.7rem;
+    color: var(--tinta-suave);
+    margin-bottom: 3px;
+  }
+  .user { color: var(--tinta); }
+  .ia { color: var(--tinta-suave); font-style: italic; }
+
+  textarea {
+    width: 100%;
+    font-family: inherit;
+    font-size: 1rem;
+    background: var(--papel-oscuro);
+    border: 1px solid var(--linea);
+    border-radius: 2px;
+    padding: 10px 12px;
+    color: var(--tinta);
+    resize: vertical;
+  }
+  textarea:focus { outline: 2px solid var(--sello); outline-offset: 1px; }
+
+  .acciones { margin-top: 10px; display: flex; flex-wrap: wrap; gap: 8px; }
+
+  button {
+    font-family: system-ui, sans-serif;
+    font-size: 0.85rem;
+    padding: 9px 16px;
+    border-radius: 3px;
+    border: 1px solid var(--linea);
+    background: var(--papel);
+    color: var(--tinta-suave);
+    cursor: pointer;
+  }
+  button:hover { background: var(--papel-oscuro); }
+
+  #btn-enviar {
+    background: var(--sello);
+    border-color: var(--sello-oscuro);
+    color: #f7ede0;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+  }
+  #btn-enviar:hover { background: var(--sello-oscuro); }
+
+  #memoria, #transcripcion {
+    white-space: pre-wrap;
+    background: var(--papel-oscuro);
+    border: 1px solid var(--linea);
+    padding: 14px 16px;
+    border-radius: 2px;
+    font-family: 'Courier New', monospace;
+    font-size: 0.8rem;
+    color: var(--tinta-suave);
+    margin-top: 16px;
+    display: none;
+  }
+
+  .sesion-item {
+    font-family: system-ui, sans-serif;
+    font-size: 0.85rem;
+    padding: 10px 12px;
+    border: 1px solid var(--linea);
+    border-radius: 2px;
+    margin-top: 6px;
+    cursor: pointer;
+    color: var(--tinta-suave);
+    background: var(--papel);
+  }
+  .sesion-item:hover { background: var(--papel-oscuro); }
 </style>
 </head>
 <body>
-  <h2>Mi vida — demo de entrevista</h2>
+  <h2>Mi vida — un archivo de recuerdos</h2>
   <div id="chat"></div>
-  <textarea id="input" rows="3" placeholder="Escribe tu respuesta..."></textarea><br>
-  <button onclick="enviar()">Enviar</button>
-  <button onclick="cerrarSesion()">Cerrar sesión de hoy</button>
-  <button onclick="verMemoria()">Ver memoria acumulada</button>
+  <textarea id="input" rows="3" placeholder="Escribe tu respuesta..."></textarea>
+  <div class="acciones">
+    <button id="btn-enviar" onclick="enviar()">Enviar</button>
+    <button onclick="cerrarSesion()">Cerrar sesión de hoy</button>
+    <button onclick="verMemoria()">Ver memoria acumulada</button>
+    <button onclick="verSesiones()">Ver sesiones guardadas</button>
+  </div>
   <pre id="memoria"></pre>
+  <div id="lista-sesiones"></div>
+  <pre id="transcripcion"></pre>
 
 <script>
 let sesionId = null;
@@ -47,7 +161,13 @@ function añadirMensaje(rol, texto) {
   const chat = document.getElementById('chat');
   const div = document.createElement('div');
   div.className = 'msg ' + rol;
-  div.textContent = (rol === 'user' ? 'Tú: ' : 'Entrevistadora: ') + texto;
+  const etiqueta = document.createElement('span');
+  etiqueta.className = 'etiqueta';
+  etiqueta.textContent = rol === 'user' ? 'tú escribiste' : 'la entrevistadora';
+  const cuerpo = document.createElement('span');
+  cuerpo.textContent = texto;
+  div.appendChild(etiqueta);
+  div.appendChild(cuerpo);
   chat.appendChild(div);
   chat.scrollTop = chat.scrollHeight;
 }
@@ -71,6 +191,36 @@ async function verMemoria() {
   const el = document.getElementById('memoria');
   el.style.display = 'block';
   el.textContent = JSON.stringify(data, null, 2);
+}
+
+async function verSesiones() {
+  const resp = await fetch('/api/sesiones');
+  const sesiones = await resp.json();
+  const contenedor = document.getElementById('lista-sesiones');
+  contenedor.innerHTML = '<h3>Sesiones guardadas (haz clic para ver la transcripción completa)</h3>';
+  if (sesiones.length === 0) {
+    contenedor.innerHTML += '<p>Todavía no hay sesiones guardadas.</p>';
+    return;
+  }
+  sesiones.forEach(s => {
+    const div = document.createElement('div');
+    div.className = 'sesion-item';
+    const fecha = new Date(s.fecha).toLocaleString();
+    div.textContent = `Sesión #${s.id} — ${fecha} — ${s.num_turnos} turnos — ${s.cerrada ? 'cerrada' : 'abierta'}`;
+    div.onclick = () => verTranscripcion(s.id);
+    contenedor.appendChild(div);
+  });
+}
+
+async function verTranscripcion(sesionId) {
+  const resp = await fetch(`/api/sesion/${sesionId}`);
+  const mensajes = await resp.json();
+  const el = document.getElementById('transcripcion');
+  el.style.display = 'block';
+  el.textContent = mensajes
+    .filter(m => m.role === 'user' || m.role === 'assistant')
+    .map(m => `[${m.role === 'user' ? 'TÚ' : 'IA'}] ${m.content}`)
+    .join('\n\n---\n\n');
 }
 
 // Mensaje inicial para arrancar la conversación
