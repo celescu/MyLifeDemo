@@ -249,9 +249,16 @@ def cerrar_sesion(payload: CerrarSesionIn):
         f"{m['role']}: {m['content']}" for m in mensajes if m["role"] in ("user", "assistant")
     )
 
+    # el primer mensaje "user" de la sesión es el contexto interno inyectado por el
+    # sistema (el resumen previo), no algo que haya escrito la persona de verdad;
+    # si no hay nada más que eso, no hay conversación real que resumir todavía
+    turnos_reales = [m for m in mensajes if m["role"] == "assistant"]
+    if not turnos_reales:
+        return {"error": "esta sesión no tiene ninguna respuesta todavía, no hay nada que resumir"}
+
     respuesta = client.messages.create(
         model=MODEL,
-        max_tokens=1500,
+        max_tokens=4000,
         system=SYSTEM_PROMPT_RESUMEN,
         messages=[{
             "role": "user",
@@ -273,9 +280,21 @@ def cerrar_sesion(payload: CerrarSesionIn):
     try:
         nuevo_resumen = json.loads(texto_resumen)
     except json.JSONDecodeError as e:
-        print(f"[AVISO] No se pudo parsear el resumen para el usuario {payload.usuario}: {e}")
-        print(f"[AVISO] Texto recibido del modelo: {texto_resumen[:500]}")
-        return {"error": "no se pudo generar el resumen esta vez, la conversación sigue guardada íntegra", "detalle": str(e)}
+        # intento de rescate: buscar el primer bloque {...} dentro del texto,
+        # por si el modelo añadió alguna frase antes o después del JSON
+        import re
+        match = re.search(r"\{.*\}", texto_resumen, re.DOTALL)
+        if match:
+            try:
+                nuevo_resumen = json.loads(match.group(0))
+            except json.JSONDecodeError as e2:
+                print(f"[AVISO] Rescate por regex también falló para {payload.usuario}: {e2}")
+                print(f"[AVISO] Texto recibido del modelo ({len(texto_resumen)} caracteres): {texto_resumen}")
+                return {"error": "no se pudo generar el resumen esta vez, la conversación sigue guardada íntegra", "detalle": str(e2)}
+        else:
+            print(f"[AVISO] No se pudo parsear el resumen para el usuario {payload.usuario}: {e}")
+            print(f"[AVISO] Texto recibido del modelo ({len(texto_resumen)} caracteres): {texto_resumen}")
+            return {"error": "no se pudo generar el resumen esta vez, la conversación sigue guardada íntegra", "detalle": str(e)}
 
     guardar_resumen(payload.usuario, nuevo_resumen)
 
