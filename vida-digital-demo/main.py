@@ -89,6 +89,13 @@ Si en cambio la persona te pide algo que no tiene nada que ver con contar su vid
 de asistente general, etc.), no lo hagas. Dile con amabilidad que tu papel aquí es
 acompañarla a contar su historia, no resolver ese tipo de tareas, y retoma la
 conversación biográfica con una pregunta relacionada con lo último que sí contó.
+
+Si tienes disponible su autopercepción declarada (cómo se describe a sí misma en
+un cuestionario), puedes usarla ocasionalmente para pedir un ejemplo concreto que
+la ilustre o la contraste ("dijiste que te mantienes calmado ante un conflicto,
+¿me cuentas alguna vez que lo vivieras así?"), pero no la menciones constantemente
+ni la trates como un hecho — es solo cómo ella misma se ve, no una verdad
+verificada.
 """
 
 SYSTEM_PROMPT_RESUMEN = """Vas a recibir un resumen de memoria previo (puede estar vacío)
@@ -134,6 +141,50 @@ HERRAMIENTA_RESUMEN = {
 }
 
 
+CUESTIONARIO_AUTOPERCEPCION = [
+    {"id": "conflicto", "pregunta": "Ante un conflicto con otra persona, ¿cómo reaccionas habitualmente?",
+     "opciones": ["Confronto directamente y a veces pierdo los nervios", "Me mantengo calmado y trato el problema con raciocinio", "Evito el conflicto siempre que puedo", "Cedo para que se resuelva cuanto antes"]},
+    {"id": "decisiones", "pregunta": "Cuando tienes que tomar una decisión importante, ¿qué haces normalmente?",
+     "opciones": ["Decido rápido, siguiendo la intuición", "Analizo mucho antes de decidir", "Pido consejo a otras personas", "Tiendo a posponer la decisión"]},
+    {"id": "energia_social", "pregunta": "¿De dónde sacas energía habitualmente?",
+     "opciones": ["De estar rodeado de gente y socializar", "De pasar tiempo a solas", "De ambas por igual, depende del momento", "Me cuesta identificarlo"]},
+    {"id": "incertidumbre", "pregunta": "¿Cómo te llevas con el cambio o la incertidumbre?",
+     "opciones": ["Lo abrazo, me estimula", "Lo tolero razonablemente bien", "Prefiero evitarlo si puedo", "Me genera bastante ansiedad"]},
+    {"id": "expresion_emocional", "pregunta": "¿Cómo expresas tus emociones habitualmente?",
+     "opciones": ["Las expreso abiertamente, sin filtro", "Las guardo mayormente para mí mismo", "Las comparto solo con muy pocas personas de confianza", "A veces me cuesta identificar lo que siento"]},
+    {"id": "riesgo", "pregunta": "¿Cómo te describirías respecto al riesgo?",
+     "opciones": ["Busco el riesgo, me atrae", "Tomo riesgos calculados", "Soy prudente por naturaleza", "Soy muy cauteloso, evito el riesgo"]},
+    {"id": "control", "pregunta": "¿Sientes que controlas el rumbo de tu vida?",
+     "opciones": ["Sí, siento que depende sobre todo de mí", "Creo que depende bastante de las circunstancias", "Un poco de ambas cosas", "Depende mucho del área de mi vida de la que hablemos"]},
+    {"id": "optimismo", "pregunta": "¿Cómo ves el futuro, en general?",
+     "opciones": ["Con mucho optimismo", "Con optimismo cauto", "De forma neutral o realista", "Tiendo a preocuparme por lo que pueda venir"]},
+    {"id": "estructura", "pregunta": "¿Cómo te llevas con la planificación y el orden?",
+     "opciones": ["Me gusta planificarlo prácticamente todo", "Prefiero cierta rutina pero con flexibilidad", "Improviso la mayoría de las veces", "Evito planificar en general"]},
+    {"id": "empatia", "pregunta": "A la hora de priorizar, ¿qué es más habitual en ti?",
+     "opciones": ["Priorizo las necesidades de los demás", "Busco un equilibrio entre mis necesidades y las de otros", "Priorizo mis propias necesidades", "Me cuesta conectar con lo que sienten los demás"]},
+    {"id": "ambicion", "pregunta": "¿Cómo describirías tu relación con las metas y el logro?",
+     "opciones": ["Estoy muy orientado a conseguir metas concretas", "Tengo metas pero sin obsesionarme", "Prefiero disfrutar el presente antes que perseguir metas", "No tengo grandes metas en este momento"]},
+    {"id": "novedad", "pregunta": "¿Prefieres la estabilidad o la novedad en tu día a día?",
+     "opciones": ["Prefiero la estabilidad y la rutina", "Me gusta algo de novedad de vez en cuando", "Busco constantemente experiencias nuevas", "Depende mucho del momento de mi vida"]},
+    {"id": "comunicacion", "pregunta": "¿Cómo describirías tu estilo de comunicación?",
+     "opciones": ["Directo, digo las cosas sin rodeos", "Diplomático, cuido cómo digo las cosas", "Reservado, no suelo compartir mucho", "Expresivo, dejo ver bastante mis emociones al hablar"]},
+    {"id": "fracaso", "pregunta": "¿Cómo reaccionas normalmente ante un fracaso?",
+     "opciones": ["Lo asimilo rápido y sigo adelante", "Me afecta bastante y necesito tiempo para superarlo", "Tiendo a ser muy autocrítico conmigo mismo", "Tiendo a quitarle importancia"]},
+    {"id": "valores", "pregunta": "Si tuvieras que elegir, ¿qué priorizarías en tu vida?",
+     "opciones": ["La familia y las relaciones cercanas", "El logro personal o profesional", "La libertad y la independencia", "La seguridad y la estabilidad"]},
+    {"id": "humor", "pregunta": "¿Qué papel juega el sentido del humor en tu forma de ser?",
+     "opciones": ["Lo uso con mucha frecuencia", "Depende bastante de la situación", "Tiendo al humor irónico o sarcástico", "No soy muy dado al humor"]},
+    {"id": "aprobacion", "pregunta": "¿Cuánto te importa lo que piensen los demás de ti?",
+     "opciones": ["Muy poco, decido a partir de mí mismo", "Moderadamente, lo tengo en cuenta", "Bastante, me preocupa la opinión ajena", "Evito el conflicto para quedar bien con los demás"]},
+    {"id": "espontaneidad", "pregunta": "En tu día a día, ¿cómo te organizas?",
+     "opciones": ["De forma muy organizada y planificada", "Con una mezcla de planificación y espontaneidad", "Mayormente de forma espontánea", "Totalmente espontáneo, sin planificar casi nada"]},
+    {"id": "colaboracion", "pregunta": "¿Prefieres trabajar solo o en equipo?",
+     "opciones": ["Prefiero trabajar solo", "Prefiero trabajar en equipo", "Depende totalmente de la tarea", "Me da bastante igual una cosa u otra"]},
+    {"id": "presion", "pregunta": "¿Cómo te comportas bajo presión o estrés?",
+     "opciones": ["Me mantengo sereno y funciono bien", "Me tenso pero consigo rendir", "Me cuesta rendir cuando hay presión", "Evito en la medida de lo posible las situaciones de presión"]},
+]
+
+
 @contextmanager
 def db():
     conn = sqlite3.connect(DB_PATH)
@@ -162,6 +213,12 @@ def init_db():
                 resumen TEXT NOT NULL
             )
         """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS autopercepcion (
+                usuario TEXT PRIMARY KEY,
+                respuestas TEXT NOT NULL
+            )
+        """)
 
 
 init_db()
@@ -176,6 +233,30 @@ class MensajeIn(BaseModel):
 class CerrarSesionIn(BaseModel):
     usuario: str = "yo"
     sesion_id: int
+
+
+class AutopercepcionIn(BaseModel):
+    usuario: str = "yo"
+    respuestas: dict  # { "conflicto": "texto de la opción elegida", ... }
+
+
+def cargar_autopercepcion(usuario: str) -> dict:
+    with db() as conn:
+        row = conn.execute(
+            "SELECT respuestas FROM autopercepcion WHERE usuario = ?", (usuario,)
+        ).fetchone()
+    if row:
+        return json.loads(row["respuestas"])
+    return {}
+
+
+def guardar_autopercepcion(usuario: str, respuestas: dict):
+    with db() as conn:
+        conn.execute(
+            "INSERT INTO autopercepcion (usuario, respuestas) VALUES (?, ?) "
+            "ON CONFLICT(usuario) DO UPDATE SET respuestas = excluded.respuestas",
+            (usuario, json.dumps(respuestas, ensure_ascii=False)),
+        )
 
 
 def cargar_resumen(usuario: str) -> dict:
@@ -221,16 +302,43 @@ def guardar_mensajes(sesion_id: int, mensajes: list):
         )
 
 
+@app.get("/api/cuestionario")
+def obtener_cuestionario():
+    return CUESTIONARIO_AUTOPERCEPCION
+
+
+@app.get("/api/autopercepcion")
+def ver_autopercepcion(usuario: str = "yo"):
+    return cargar_autopercepcion(usuario)
+
+
+@app.post("/api/autopercepcion")
+def guardar_autopercepcion_endpoint(payload: AutopercepcionIn):
+    guardar_autopercepcion(payload.usuario, payload.respuestas)
+    return {"ok": True}
+
+
 @app.post("/api/mensaje")
 def enviar_mensaje(payload: MensajeIn):
     sesion_id, mensajes = obtener_o_crear_sesion(payload.usuario, payload.sesion_id)
     resumen = cargar_resumen(payload.usuario)
 
     if not mensajes:
-        # primer mensaje de la sesión: inyectamos el resumen previo como contexto
+        # primer mensaje de la sesión: inyectamos el resumen previo y la
+        # autopercepción declarada (si existe) como contexto
+        autopercepcion = cargar_autopercepcion(payload.usuario)
+        bloque_autopercepcion = (
+            f"\n\nAutopercepción que la persona ha declarado sobre sí misma "
+            f"(respuestas a un cuestionario de opción múltiple, en sus propias "
+            f"palabras elegidas — puedes usarlo para contrastar con anécdotas "
+            f"concretas, pero no lo trates como un hecho biográfico, es su "
+            f"propia forma de describirse):\n{json.dumps(autopercepcion, ensure_ascii=False)}"
+            if autopercepcion else ""
+        )
         contexto = (
             f"Resumen de memoria acumulado hasta ahora (JSON):\n"
-            f"{json.dumps(resumen, ensure_ascii=False)}\n\n"
+            f"{json.dumps(resumen, ensure_ascii=False)}"
+            f"{bloque_autopercepcion}\n\n"
             f"Empieza la sesión de hoy. Si hay temas_pendientes, prioriza uno de ellos "
             f"con una pregunta natural; si el resumen está vacío, empieza por la infancia."
         )
@@ -339,6 +447,15 @@ def ver_sesion(sesion_id: int, usuario: str = "yo"):
     if not row:
         return {"error": "sesión no encontrada"}
     return json.loads(row["mensajes"])
+
+
+@app.get("/api/descargar-db")
+def descargar_db():
+    return FileResponse(
+        DB_PATH,
+        filename="memoria.db",
+        media_type="application/octet-stream",
+    )
 
 
 @app.get("/api/memoria")
