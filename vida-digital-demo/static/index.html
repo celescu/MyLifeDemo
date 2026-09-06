@@ -171,12 +171,51 @@
     border-color: var(--sello-oscuro);
   }
   .opcion-cuestionario input { margin-right: 8px; }
+
+  button.activo {
+    background: var(--sello);
+    color: #f7ede0;
+    border-color: var(--sello-oscuro);
+  }
+  button.activo:hover { background: var(--sello-oscuro); }
+
+  .sesion-item.activa {
+    background: #ddb9a9;
+    border-color: var(--sello-oscuro);
+  }
+
+  #reloj-sesion {
+    font-family: system-ui, sans-serif;
+    font-size: 0.78rem;
+    color: var(--tinta-suave);
+    margin-bottom: 8px;
+    display: none;
+  }
+  #reloj-sesion .punto-vivo {
+    display: inline-block;
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    background: var(--sello);
+    margin-right: 6px;
+    animation: parpadeo 2s infinite ease-in-out;
+  }
+
+  .sesion-cabecera {
+    font-weight: 600;
+    display: block;
+    margin-bottom: 2px;
+  }
+  .sesion-subtitulo {
+    font-size: 0.78rem;
+    opacity: 0.85;
+  }
 </style>
 </head>
 <body>
 
 <div id="vista-entrevista">
   <h2>Mi vida — un archivo de recuerdos</h2>
+  <div id="reloj-sesion"><span class="punto-vivo"></span><span id="reloj-texto">Sesión en curso: 00:00</span></div>
   <div id="chat"></div>
   <textarea id="input" rows="3" placeholder="Escribe tu respuesta..."></textarea>
   <div class="acciones">
@@ -208,6 +247,34 @@
 <script>
 let sesionId = null;
 let transcripcionAbiertaId = null;
+let sesionInicioMs = null;
+let intervaloReloj = null;
+
+function iniciarReloj(fechaIsoUtc) {
+  // fecha guardada como UTC sin sufijo 'Z' (datetime.utcnow().isoformat());
+  // se lo añadimos para que el navegador la interprete correctamente
+  const fechaConZ = fechaIsoUtc.endsWith('Z') ? fechaIsoUtc : fechaIsoUtc + 'Z';
+  sesionInicioMs = new Date(fechaConZ).getTime();
+  document.getElementById('reloj-sesion').style.display = 'block';
+  actualizarReloj();
+  if (intervaloReloj) clearInterval(intervaloReloj);
+  intervaloReloj = setInterval(actualizarReloj, 1000);
+}
+
+function actualizarReloj() {
+  if (sesionInicioMs === null) return;
+  const segundos = Math.max(0, Math.floor((Date.now() - sesionInicioMs) / 1000));
+  const mm = String(Math.floor(segundos / 60)).padStart(2, '0');
+  const ss = String(segundos % 60).padStart(2, '0');
+  document.getElementById('reloj-texto').textContent = `Sesión en curso: ${mm}:${ss}`;
+}
+
+function detenerReloj() {
+  if (intervaloReloj) clearInterval(intervaloReloj);
+  intervaloReloj = null;
+  sesionInicioMs = null;
+  document.getElementById('reloj-sesion').style.display = 'none';
+}
 
 async function enviar() {
   const input = document.getElementById('input');
@@ -229,6 +296,7 @@ async function enviar() {
     });
     const data = await resp.json();
     sesionId = data.sesion_id;
+    if (sesionInicioMs === null) iniciarReloj(data.fecha_inicio);
     quitarEscribiendo();
     añadirMensaje('ia', data.respuesta);
   } catch (e) {
@@ -289,7 +357,7 @@ async function cerrarSesionPorId(id, btn) {
       return;
     }
     alert('Sesión #' + id + ' cerrada y memoria actualizada.');
-    if (sesionId === id) sesionId = null;
+    if (sesionId === id) { sesionId = null; detenerReloj(); }
     await refrescarListaSesiones();
   } catch (e) {
     alert('Hubo un problema al cerrar la sesión.');
@@ -317,6 +385,7 @@ async function cerrarSesion(ev) {
     }
     alert('Sesión cerrada y memoria actualizada. Puedes cerrar la pestaña y volver otro día.');
     sesionId = null;
+    detenerReloj();
     document.getElementById('chat').innerHTML = '';
   } catch (e) {
     alert('Hubo un problema al cerrar la sesión. Inténtalo de nuevo.');
@@ -332,6 +401,7 @@ async function verMemoria(ev) {
 
   if (el.style.display === 'block') {
     el.style.display = 'none';
+    btn.classList.remove('activo');
     return;
   }
 
@@ -343,6 +413,7 @@ async function verMemoria(ev) {
     const data = await resp.json();
     el.style.display = 'block';
     el.textContent = JSON.stringify(data, null, 2);
+    btn.classList.add('activo');
   } finally {
     btn.disabled = false;
     btn.textContent = textoOriginal;
@@ -361,12 +432,17 @@ async function refrescarListaSesiones() {
   sesiones.forEach(s => {
     const div = document.createElement('div');
     div.className = 'sesion-item';
-    const fecha = new Date(s.fecha).toLocaleString();
+    div.dataset.sesionId = s.id;
+    if (transcripcionAbiertaId === s.id) div.classList.add('activa');
+
+    const fecha = new Date(s.fecha.endsWith('Z') ? s.fecha : s.fecha + 'Z').toLocaleString();
 
     const texto = document.createElement('span');
-    texto.textContent = `Sesión #${s.id} — ${fecha} — ${s.num_turnos} turnos — ${s.cerrada ? 'cerrada' : 'abierta'}`;
     texto.style.cursor = 'pointer';
-    texto.onclick = () => verTranscripcion(s.id);
+    texto.innerHTML =
+      `<span class="sesion-cabecera">${s.titulo}</span>` +
+      `<span class="sesion-subtitulo">#${s.id} — ${fecha} — ${s.num_turnos} turnos — ${s.cerrada ? 'cerrada' : 'abierta'}</span>`;
+    texto.onclick = () => verTranscripcion(s.id, s.titulo);
     div.appendChild(texto);
 
     if (!s.cerrada) {
@@ -388,34 +464,49 @@ async function refrescarListaSesiones() {
 
 async function verSesiones(ev) {
   const btn = ev.target;
+  const contenedor = document.getElementById('lista-sesiones');
+
+  if (btn.classList.contains('activo')) {
+    contenedor.innerHTML = '';
+    contenedor.style.display = 'none';
+    btn.classList.remove('activo');
+    return;
+  }
+
   const textoOriginal = btn.textContent;
   btn.disabled = true;
   btn.textContent = 'Cargando...';
   try {
+    contenedor.style.display = 'block';
     await refrescarListaSesiones();
+    btn.classList.add('activo');
   } finally {
     btn.disabled = false;
     btn.textContent = textoOriginal;
   }
 }
 
-async function verTranscripcion(id) {
+async function verTranscripcion(id, titulo) {
   const el = document.getElementById('transcripcion');
 
   if (transcripcionAbiertaId === id) {
     el.style.display = 'none';
     transcripcionAbiertaId = null;
-    return;
+  } else {
+    const resp = await fetch(`/api/sesion/${id}`);
+    const mensajes = await resp.json();
+    el.style.display = 'block';
+    const cuerpo = mensajes
+      .filter(m => m.role === 'user' || m.role === 'assistant')
+      .map(m => `[${m.role === 'user' ? 'TÚ' : 'IA'}] ${m.content}`)
+      .join('\n\n---\n\n');
+    el.textContent = `— ${titulo} —\n\n${cuerpo}`;
+    transcripcionAbiertaId = id;
   }
 
-  const resp = await fetch(`/api/sesion/${id}`);
-  const mensajes = await resp.json();
-  el.style.display = 'block';
-  el.textContent = mensajes
-    .filter(m => m.role === 'user' || m.role === 'assistant')
-    .map(m => `[${m.role === 'user' ? 'TÚ' : 'IA'}] ${m.content}`)
-    .join('\n\n---\n\n');
-  transcripcionAbiertaId = id;
+  document.querySelectorAll('.sesion-item').forEach(item => {
+    item.classList.toggle('activa', Number(item.dataset.sesionId) === transcripcionAbiertaId);
+  });
 }
 
 // Mensaje inicial para arrancar la conversación
