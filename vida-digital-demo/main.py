@@ -278,20 +278,21 @@ def guardar_resumen(usuario: str, resumen: dict):
         )
 
 
-def obtener_o_crear_sesion(usuario: str, sesion_id: int | None) -> tuple[int, list]:
+def obtener_o_crear_sesion(usuario: str, sesion_id: int | None) -> tuple[int, list, str]:
     with db() as conn:
         if sesion_id is not None:
             row = conn.execute(
-                "SELECT id, mensajes FROM sesiones WHERE id = ? AND usuario = ?",
+                "SELECT id, mensajes, fecha FROM sesiones WHERE id = ? AND usuario = ?",
                 (sesion_id, usuario),
             ).fetchone()
             if row:
-                return row["id"], json.loads(row["mensajes"])
+                return row["id"], json.loads(row["mensajes"]), row["fecha"]
+        fecha = datetime.utcnow().isoformat()
         cur = conn.execute(
             "INSERT INTO sesiones (usuario, fecha, mensajes) VALUES (?, ?, ?)",
-            (usuario, datetime.utcnow().isoformat(), json.dumps([])),
+            (usuario, fecha, json.dumps([])),
         )
-        return cur.lastrowid, []
+        return cur.lastrowid, [], fecha
 
 
 def guardar_mensajes(sesion_id: int, mensajes: list):
@@ -320,7 +321,7 @@ def guardar_autopercepcion_endpoint(payload: AutopercepcionIn):
 
 @app.post("/api/mensaje")
 def enviar_mensaje(payload: MensajeIn):
-    sesion_id, mensajes = obtener_o_crear_sesion(payload.usuario, payload.sesion_id)
+    sesion_id, mensajes, fecha_inicio = obtener_o_crear_sesion(payload.usuario, payload.sesion_id)
     resumen = cargar_resumen(payload.usuario)
 
     if not mensajes:
@@ -356,7 +357,7 @@ def enviar_mensaje(payload: MensajeIn):
     mensajes.append({"role": "assistant", "content": texto})
     guardar_mensajes(sesion_id, mensajes)
 
-    return {"sesion_id": sesion_id, "respuesta": texto}
+    return {"sesion_id": sesion_id, "respuesta": texto, "fecha_inicio": fecha_inicio}
 
 
 @app.post("/api/cerrar_sesion")
@@ -416,6 +417,17 @@ def cerrar_sesion(payload: CerrarSesionIn):
     return {"resumen": nuevo_resumen}
 
 
+MARCADOR_CONTEXTO_INTERNO = "Resumen de memoria acumulado hasta ahora"
+
+
+def calcular_titulo(mensajes: list) -> str:
+    for m in mensajes:
+        if m["role"] == "user" and not m["content"].startswith(MARCADOR_CONTEXTO_INTERNO):
+            texto = m["content"].strip()
+            return texto[:60] + ("…" if len(texto) > 60 else "")
+    return "(sesión sin mensajes todavía)"
+
+
 @app.get("/api/sesiones")
 def listar_sesiones(usuario: str = "yo"):
     with db() as conn:
@@ -433,6 +445,7 @@ def listar_sesiones(usuario: str = "yo"):
             "fecha": f["fecha"],
             "cerrada": bool(f["cerrada"]),
             "num_turnos": num_turnos,
+            "titulo": calcular_titulo(mensajes),
         })
     return resultado
 
@@ -446,7 +459,14 @@ def ver_sesion(sesion_id: int, usuario: str = "yo"):
         ).fetchone()
     if not row:
         return {"error": "sesión no encontrada"}
-    return json.loads(row["mensajes"])
+    mensajes = json.loads(row["mensajes"])
+    # se oculta el mensaje interno de contexto (resumen previo + autopercepción)
+    # que se inyecta al arrancar cada sesión: es plumbing interno, no conversación real
+    mensajes_visibles = [
+        m for m in mensajes
+        if not (m["role"] == "user" and m["content"].startswith(MARCADOR_CONTEXTO_INTERNO))
+    ]
+    return mensajes_visibles
 
 
 @app.get("/api/descargar-db")
