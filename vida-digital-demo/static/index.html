@@ -144,10 +144,38 @@
     color: var(--tinta-suave);
     background: var(--papel);
   }
-  .sesion-item:hover { background: var(--papel-oscuro); }
+  .pregunta-cuestionario {
+    margin-bottom: 22px;
+    padding-bottom: 18px;
+    border-bottom: 1px solid var(--linea);
+  }
+  .pregunta-cuestionario p.enunciado {
+    font-size: 1rem;
+    margin-bottom: 10px;
+  }
+  .opcion-cuestionario {
+    display: block;
+    font-family: system-ui, sans-serif;
+    font-size: 0.9rem;
+    padding: 8px 10px;
+    margin-bottom: 6px;
+    border: 1px solid var(--linea);
+    border-radius: 3px;
+    cursor: pointer;
+    background: var(--papel-oscuro);
+  }
+  .opcion-cuestionario:hover { background: #ddcfab; }
+  .opcion-cuestionario.seleccionada {
+    background: var(--sello);
+    color: #f7ede0;
+    border-color: var(--sello-oscuro);
+  }
+  .opcion-cuestionario input { margin-right: 8px; }
 </style>
 </head>
 <body>
+
+<div id="vista-entrevista">
   <h2>Mi vida — un archivo de recuerdos</h2>
   <div id="chat"></div>
   <textarea id="input" rows="3" placeholder="Escribe tu respuesta..."></textarea>
@@ -156,10 +184,26 @@
     <button onclick="cerrarSesion(event)">Cerrar sesión de hoy</button>
     <button onclick="verMemoria(event)">Ver memoria acumulada</button>
     <button onclick="verSesiones(event)">Ver sesiones guardadas</button>
+    <button onclick="abrirCuestionario()">Cuestionario de autopercepción</button>
+    <a href="/api/descargar-db" style="align-self: center; font-family: system-ui, sans-serif; font-size: 0.8rem; color: var(--tinta-suave);">Descargar copia de seguridad</a>
   </div>
   <pre id="memoria"></pre>
   <div id="lista-sesiones"></div>
   <pre id="transcripcion"></pre>
+</div>
+
+<div id="vista-cuestionario" style="display: none;">
+  <h2>Cuestionario de autopercepción</h2>
+  <p style="font-family: system-ui, sans-serif; font-size: 0.85rem; color: var(--tinta-suave); margin-bottom: 20px;">
+    Así te describes tú mismo — no es un diagnóstico ni una evaluación, solo tu propia
+    forma de verte. Tus respuestas ayudarán a la entrevistadora a conocerte mejor.
+  </p>
+  <div id="preguntas-cuestionario"></div>
+  <div class="acciones">
+    <button id="btn-guardar-cuestionario" onclick="guardarCuestionario()">Guardar respuestas</button>
+    <button onclick="volverASesiones()">Volver a sesiones</button>
+  </div>
+</div>
 
 <script>
 let sesionId = null;
@@ -376,6 +420,85 @@ async function verTranscripcion(id) {
 
 // Mensaje inicial para arrancar la conversación
 añadirMensaje('ia', 'Escribe algo (ej. "hola") para que empiece la entrevista.');
+
+// --- Cuestionario de autopercepción ---
+
+let respuestasCuestionario = {};
+
+async function abrirCuestionario() {
+  document.getElementById('vista-entrevista').style.display = 'none';
+  document.getElementById('vista-cuestionario').style.display = 'block';
+
+  const [respPreguntas, respGuardadas] = await Promise.all([
+    fetch('/api/cuestionario'),
+    fetch('/api/autopercepcion'),
+  ]);
+  const preguntas = await respPreguntas.json();
+  respuestasCuestionario = await respGuardadas.json();
+
+  const contenedor = document.getElementById('preguntas-cuestionario');
+  contenedor.innerHTML = '';
+
+  preguntas.forEach(p => {
+    const bloque = document.createElement('div');
+    bloque.className = 'pregunta-cuestionario';
+
+    const enunciado = document.createElement('p');
+    enunciado.className = 'enunciado';
+    enunciado.textContent = p.pregunta;
+    bloque.appendChild(enunciado);
+
+    p.opciones.forEach(opcion => {
+      const label = document.createElement('label');
+      label.className = 'opcion-cuestionario';
+      if (respuestasCuestionario[p.id] === opcion) {
+        label.classList.add('seleccionada');
+      }
+
+      const input = document.createElement('input');
+      input.type = 'radio';
+      input.name = p.id;
+      input.value = opcion;
+      input.checked = respuestasCuestionario[p.id] === opcion;
+      input.onchange = () => {
+        respuestasCuestionario[p.id] = opcion;
+        bloque.querySelectorAll('.opcion-cuestionario').forEach(o => o.classList.remove('seleccionada'));
+        label.classList.add('seleccionada');
+      };
+
+      label.appendChild(input);
+      label.appendChild(document.createTextNode(opcion));
+      bloque.appendChild(label);
+    });
+
+    contenedor.appendChild(bloque);
+  });
+}
+
+async function guardarCuestionario() {
+  const btn = document.getElementById('btn-guardar-cuestionario');
+  const textoOriginal = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = 'Guardando...';
+  try {
+    await fetch('/api/autopercepcion', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ respuestas: respuestasCuestionario }),
+    });
+    alert('Respuestas guardadas. La entrevistadora las tendrá en cuenta a partir de tu próxima sesión.');
+  } catch (e) {
+    alert('Hubo un problema al guardar. Inténtalo de nuevo.');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = textoOriginal;
+  }
+}
+
+function volverASesiones() {
+  document.getElementById('vista-cuestionario').style.display = 'none';
+  document.getElementById('vista-entrevista').style.display = 'block';
+}
 </script>
 </body>
 </html>
