@@ -25,7 +25,7 @@
     color: var(--tinta);
     max-width: 640px;
     margin: 48px auto;
-    padding: 0 20px 60px;
+    padding: 0 20px 90px;
   }
 
   h2 {
@@ -185,10 +185,19 @@
   }
 
   #reloj-sesion {
+    position: fixed;
+    left: 50%;
+    bottom: 18px;
+    transform: translateX(-50%);
     font-family: system-ui, sans-serif;
-    font-size: 0.78rem;
+    font-size: 0.8rem;
     color: var(--tinta-suave);
-    margin-bottom: 8px;
+    background: var(--papel-oscuro);
+    border: 1px solid var(--linea);
+    padding: 8px 18px;
+    border-radius: 20px;
+    box-shadow: 0 2px 8px rgba(58, 49, 40, 0.2);
+    z-index: 1000;
     display: none;
   }
   #reloj-sesion .punto-vivo {
@@ -209,6 +218,44 @@
     font-size: 0.78rem;
     opacity: 0.85;
   }
+
+  .tarjetas-metricas {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    margin-bottom: 24px;
+  }
+  .tarjeta-metrica {
+    flex: 1 1 130px;
+    background: var(--papel-oscuro);
+    border: 1px solid var(--linea);
+    border-radius: 3px;
+    padding: 12px 14px;
+    font-family: system-ui, sans-serif;
+  }
+  .tarjeta-metrica .valor {
+    font-size: 1.3rem;
+    font-weight: 600;
+    color: var(--sello-oscuro);
+    display: block;
+  }
+  .tarjeta-metrica .etiqueta {
+    font-size: 0.72rem;
+    color: var(--tinta-suave);
+  }
+
+  .tabla-metricas {
+    width: 100%;
+    border-collapse: collapse;
+    font-family: system-ui, sans-serif;
+    font-size: 0.78rem;
+  }
+  .tabla-metricas th, .tabla-metricas td {
+    text-align: left;
+    padding: 6px 8px;
+    border-bottom: 1px solid var(--linea);
+  }
+  .tabla-metricas th { color: var(--tinta-suave); font-weight: 600; }
 </style>
 </head>
 <body>
@@ -224,6 +271,7 @@
     <button onclick="verMemoria(event)">Ver memoria acumulada</button>
     <button onclick="verSesiones(event)">Ver sesiones guardadas</button>
     <button onclick="abrirCuestionario()">Cuestionario de autopercepción</button>
+    <button onclick="abrirMetricas()">Métricas de uso</button>
     <a href="/api/descargar-db" style="align-self: center; font-family: system-ui, sans-serif; font-size: 0.8rem; color: var(--tinta-suave);">Descargar copia de seguridad</a>
   </div>
   <pre id="memoria"></pre>
@@ -241,6 +289,16 @@
   <div class="acciones">
     <button id="btn-guardar-cuestionario" onclick="guardarCuestionario()">Guardar respuestas</button>
     <button onclick="volverASesiones()">Volver a sesiones</button>
+  </div>
+</div>
+
+<div id="vista-metricas" style="display: none;">
+  <h2>Métricas de uso</h2>
+  <div id="tarjetas-metricas-totales" class="tarjetas-metricas"></div>
+  <div id="grafico-metricas" style="margin-bottom: 24px;"></div>
+  <div id="tabla-metricas-sesiones"></div>
+  <div class="acciones">
+    <button onclick="volverASesionesDesdeMetricas()">Volver a sesiones</button>
   </div>
 </div>
 
@@ -601,6 +659,95 @@ async function guardarCuestionario() {
 
 function volverASesiones() {
   document.getElementById('vista-cuestionario').style.display = 'none';
+  document.getElementById('vista-entrevista').style.display = 'block';
+}
+
+// --- Métricas de uso ---
+
+function formatearDuracion(segundos) {
+  const h = Math.floor(segundos / 3600);
+  const m = Math.floor((segundos % 3600) / 60);
+  if (h > 0) return `${h} h ${m} min`;
+  return `${m} min`;
+}
+
+async function abrirMetricas() {
+  document.getElementById('vista-entrevista').style.display = 'none';
+  document.getElementById('vista-metricas').style.display = 'block';
+
+  const resp = await fetch('/api/metricas');
+  const data = await resp.json();
+
+  const t = data.totales;
+  const tarjetas = document.getElementById('tarjetas-metricas-totales');
+  tarjetas.innerHTML = `
+    <div class="tarjeta-metrica"><span class="valor">${t.num_sesiones}</span><span class="etiqueta">sesiones</span></div>
+    <div class="tarjeta-metrica"><span class="valor">${(t.tokens_input + t.tokens_output).toLocaleString('es-ES')}</span><span class="etiqueta">tokens totales</span></div>
+    <div class="tarjeta-metrica"><span class="valor">${t.palabras_usuario.toLocaleString('es-ES')}</span><span class="etiqueta">palabras escritas</span></div>
+    <div class="tarjeta-metrica"><span class="valor">${formatearDuracion(t.duracion_segundos)}</span><span class="etiqueta">tiempo total</span></div>
+    <div class="tarjeta-metrica"><span class="valor">$${t.coste_estimado.toFixed(3)}</span><span class="etiqueta">coste estimado</span></div>
+  `;
+
+  dibujarGraficoCoste(data.sesiones);
+
+  const tabla = document.getElementById('tabla-metricas-sesiones');
+  if (data.sesiones.length === 0) {
+    tabla.innerHTML = '<p style="font-family: system-ui, sans-serif; font-size: 0.85rem;">Todavía no hay sesiones registradas.</p>';
+    return;
+  }
+  let filas = '';
+  data.sesiones.slice().reverse().forEach(s => {
+    filas += `<tr>
+      <td>${s.titulo}</td>
+      <td>${(s.tokens_input + s.tokens_output).toLocaleString('es-ES')}</td>
+      <td>${s.palabras_usuario}</td>
+      <td>${formatearDuracion(s.duracion_segundos)}</td>
+      <td>$${s.coste_estimado.toFixed(4)}</td>
+    </tr>`;
+  });
+  tabla.innerHTML = `
+    <table class="tabla-metricas">
+      <thead><tr><th>Sesión</th><th>Tokens</th><th>Palabras</th><th>Duración</th><th>Coste</th></tr></thead>
+      <tbody>${filas}</tbody>
+    </table>
+  `;
+}
+
+function dibujarGraficoCoste(sesiones) {
+  const contenedor = document.getElementById('grafico-metricas');
+  if (sesiones.length === 0) {
+    contenedor.innerHTML = '';
+    return;
+  }
+
+  const ancho = 560, alto = 160, margenInferior = 20, margenIzq = 4;
+  const maxCoste = Math.max(...sesiones.map(s => s.coste_estimado), 0.0001);
+  const anchoBarra = (ancho - margenIzq) / sesiones.length;
+
+  let barras = '';
+  sesiones.forEach((s, i) => {
+    const alturaBarra = (s.coste_estimado / maxCoste) * (alto - margenInferior - 10);
+    const x = margenIzq + i * anchoBarra + anchoBarra * 0.15;
+    const anchoReal = anchoBarra * 0.7;
+    const y = alto - margenInferior - alturaBarra;
+    barras += `<rect x="${x}" y="${y}" width="${anchoReal}" height="${Math.max(alturaBarra, 1)}" fill="#a8574a" rx="1">
+      <title>${s.titulo} — $${s.coste_estimado.toFixed(4)}</title>
+    </rect>`;
+  });
+
+  contenedor.innerHTML = `
+    <p style="font-family: system-ui, sans-serif; font-size: 0.78rem; color: var(--tinta-suave); margin-bottom: 6px;">
+      Coste estimado por sesión (pasa el ratón por encima de cada barra para ver el detalle)
+    </p>
+    <svg viewBox="0 0 ${ancho} ${alto}" style="width:100%; height:auto; background: var(--papel-oscuro); border:1px solid var(--linea); border-radius:3px;">
+      <line x1="0" y1="${alto - margenInferior}" x2="${ancho}" y2="${alto - margenInferior}" stroke="#cdbd9f" stroke-width="1" />
+      ${barras}
+    </svg>
+  `;
+}
+
+function volverASesionesDesdeMetricas() {
+  document.getElementById('vista-metricas').style.display = 'none';
   document.getElementById('vista-entrevista').style.display = 'block';
 }
 </script>
