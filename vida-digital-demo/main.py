@@ -26,6 +26,11 @@ import anthropic
 DB_PATH = os.environ.get("DB_PATH", os.path.join(os.path.dirname(__file__), "memoria.db"))
 MODEL = "claude-sonnet-4-6"
 
+# Precios aproximados de Sonnet en dólares por millón de tokens (revisar de vez
+# en cuando en la documentación de Anthropic, podrían cambiar).
+PRECIO_INPUT_POR_MILLON = 2.0
+PRECIO_OUTPUT_POR_MILLON = 10.0
+
 # Usuario y contraseña para proteger el acceso a toda la app una vez esté
 # publicada en internet. Se leen de variables de entorno; si no existen,
 # la app no arranca protegida (solo pensado para uso local en tu propio PC).
@@ -61,7 +66,7 @@ async def proteger_con_password(request: Request, call_next):
         content="Acceso restringido",
     )
 
-SYSTEM_PROMPT_ENTREVISTA = """Eres una entrevistadora biográfica cálida, curiosa y paciente.
+SYSTEM_PROMPT_ENTREVISTA = """Eres una entrevistadora biográfica profesional, curiosa y paciente.
 Tu objetivo es ayudar a la persona a contar su vida con el máximo detalle posible,
 a lo largo de muchas sesiones (no tienes que cubrir todo hoy).
 
@@ -69,13 +74,26 @@ Bloques temáticos a cubrir con el tiempo: infancia, familia, lugares donde vivi
 estudios, primeros trabajos, amistades, relaciones de pareja, momentos de cambio
 importantes, valores y creencias, aficiones, pérdidas, logros, cómo se ve a sí misma hoy.
 
+Tono:
+- Profesional y cercano, pero no efusivo. Nunca uses emojis.
+- Evita exclamaciones y adjetivos superlativos vacíos ("qué interesante",
+  "qué bonito", "qué fuerte", "increíble") como reacción automática a lo que
+  cuenta la persona. Esas coletillas suenan complacientes y no aportan nada.
+- Para mostrar que has entendido y que la escuchas, usa en su lugar una
+  paráfrasis breve o una conexión concreta con algo que ya contó antes
+  ("eso encaja con lo que decías sobre..."), no una valoración positiva
+  genérica. La validación real viene de demostrar comprensión, no de opinar
+  que lo que cuenta es bueno, admirable o interesante.
+- No emitas juicios de valor sobre las decisiones o el comportamiento de la
+  persona ni de terceros que mencione, ni en positivo ni en negativo.
+  Mantente en el papel de quien escucha y pregunta, no de quien evalúa.
+
 Reglas:
 - Haz UNA pregunta a la vez, nunca varias juntas.
 - Si la respuesta anterior tiene carga emocional o abre un hilo interesante, profundiza
   ahí antes de saltar a otro bloque.
 - Si llevas varios turnos en un bloque, puedes pasar a otro con una transición natural.
 - No inventes ni completes huecos: si no lo sabes, pregúntalo.
-- Habla en un tono cercano, como una conversación real, no como un formulario.
 - Ten en cuenta el resumen de memoria previo (si existe) para no repetir preguntas
   ya respondidas en sesiones anteriores, y para retomar los "temas pendientes".
 
@@ -237,6 +255,17 @@ def init_db():
                 respuestas TEXT NOT NULL
             )
         """)
+        # migraciones: añadir columnas nuevas a bases de datos ya existentes
+        # (CREATE TABLE IF NOT EXISTS no las añade si la tabla ya existía)
+        for columna, definicion in [
+            ("fecha_cierre", "TEXT"),
+            ("tokens_input", "INTEGER DEFAULT 0"),
+            ("tokens_output", "INTEGER DEFAULT 0"),
+        ]:
+            try:
+                conn.execute(f"ALTER TABLE sesiones ADD COLUMN {columna} {definicion}")
+            except sqlite3.OperationalError:
+                pass  # la columna ya existe, no hay nada que hacer
 
 
 init_db()
@@ -321,6 +350,23 @@ def guardar_mensajes(sesion_id: int, mensajes: list):
         )
 
 
+def sumar_tokens(sesion_id: int, tokens_input: int, tokens_output: int):
+    with db() as conn:
+        conn.execute(
+            "UPDATE sesiones SET tokens_input = tokens_input + ?, "
+            "tokens_output = tokens_output + ? WHERE id = ?",
+            (tokens_input, tokens_output, sesion_id),
+        )
+
+
+def marcar_cerrada(sesion_id: int):
+    with db() as conn:
+        conn.execute(
+            "UPDATE sesiones SET cerrada = 1, fecha_cierre = ? WHERE id = ?",
+            (datetime.utcnow().isoformat(), sesion_id),
+        )
+
+
 @app.get("/api/cuestionario")
 def obtener_cuestionario():
     return CUESTIONARIO_AUTOPERCEPCION
@@ -374,11 +420,11 @@ def enviar_mensaje(payload: MensajeIn):
     texto = respuesta.content[0].text
     mensajes.append({"role": "assistant", "content": texto})
     guardar_mensajes(sesion_id, mensajes)
+    sumar_tokens(sesion_id, respuesta.usage.input_tokens, respuesta.usage.output_tokens)
 
     if texto.startswith(MARCADOR_CIERRE_USO_INDEBIDO):
         texto_visible = texto[len(MARCADOR_CIERRE_USO_INDEBIDO):].strip()
-        with db() as conn:
-            conn.execute("UPDATE sesiones SET cerrada = 1 WHERE id = ?", (sesion_id,))
+        marcar_cerrada(sesion_id)
         print(f"[AVISO] Sesión {sesion_id} cerrada automáticamente por uso indebido (usuario: {payload.usuario})")
         return {
             "sesion_id": sesion_id,
@@ -440,9 +486,8 @@ def cerrar_sesion(payload: CerrarSesionIn):
     nuevo_resumen = bloque_herramienta.input
 
     guardar_resumen(payload.usuario, nuevo_resumen)
-
-    with db() as conn:
-        conn.execute("UPDATE sesiones SET cerrada = 1 WHERE id = ?", (payload.sesion_id,))
+    sumar_tokens(payload.sesion_id, respuesta.usage.input_tokens, respuesta.usage.output_tokens)
+    marcar_cerrada(payload.sesion_id)
 
     return {"resumen": nuevo_resumen}
 
@@ -498,6 +543,80 @@ def ver_sesion(sesion_id: int, usuario: str = "yo"):
         if not (m["role"] == "user" and m["content"].startswith(MARCADOR_CONTEXTO_INTERNO))
     ]
     return mensajes_visibles
+
+
+def contar_palabras_usuario(mensajes: list) -> int:
+    total = 0
+    for m in mensajes:
+        if m["role"] == "user" and not m["content"].startswith(MARCADOR_CONTEXTO_INTERNO):
+            total += len(m["content"].split())
+    return total
+
+
+@app.get("/api/metricas")
+def obtener_metricas(usuario: str = "yo"):
+    with db() as conn:
+        filas = conn.execute(
+            "SELECT id, fecha, fecha_cierre, cerrada, mensajes, tokens_input, tokens_output "
+            "FROM sesiones WHERE usuario = ? ORDER BY id ASC",
+            (usuario,),
+        ).fetchall()
+
+    sesiones = []
+    total_tokens_input = 0
+    total_tokens_output = 0
+    total_palabras = 0
+    total_segundos = 0
+
+    for f in filas:
+        mensajes = json.loads(f["mensajes"])
+        palabras = contar_palabras_usuario(mensajes)
+
+        inicio = datetime.fromisoformat(f["fecha"])
+        if f["fecha_cierre"]:
+            fin = datetime.fromisoformat(f["fecha_cierre"])
+        else:
+            fin = datetime.utcnow()
+        duracion_segundos = max(0, int((fin - inicio).total_seconds()))
+
+        coste = (
+            (f["tokens_input"] or 0) / 1_000_000 * PRECIO_INPUT_POR_MILLON
+            + (f["tokens_output"] or 0) / 1_000_000 * PRECIO_OUTPUT_POR_MILLON
+        )
+
+        sesiones.append({
+            "id": f["id"],
+            "titulo": calcular_titulo(mensajes),
+            "fecha": f["fecha"],
+            "cerrada": bool(f["cerrada"]),
+            "tokens_input": f["tokens_input"] or 0,
+            "tokens_output": f["tokens_output"] or 0,
+            "palabras_usuario": palabras,
+            "duracion_segundos": duracion_segundos,
+            "coste_estimado": round(coste, 4),
+        })
+
+        total_tokens_input += f["tokens_input"] or 0
+        total_tokens_output += f["tokens_output"] or 0
+        total_palabras += palabras
+        total_segundos += duracion_segundos
+
+    total_coste = (
+        total_tokens_input / 1_000_000 * PRECIO_INPUT_POR_MILLON
+        + total_tokens_output / 1_000_000 * PRECIO_OUTPUT_POR_MILLON
+    )
+
+    return {
+        "sesiones": sesiones,
+        "totales": {
+            "num_sesiones": len(sesiones),
+            "tokens_input": total_tokens_input,
+            "tokens_output": total_tokens_output,
+            "palabras_usuario": total_palabras,
+            "duracion_segundos": total_segundos,
+            "coste_estimado": round(total_coste, 4),
+        },
+    }
 
 
 @app.get("/api/descargar-db")
