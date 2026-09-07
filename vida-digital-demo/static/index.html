@@ -287,6 +287,7 @@ async function enviar() {
   btn.disabled = true;
   input.disabled = true;
   mostrarEscribiendo();
+  let mantenerBloqueado = false;
 
   try {
     const resp = await fetch('/api/mensaje', {
@@ -299,13 +300,25 @@ async function enviar() {
     if (sesionInicioMs === null) iniciarReloj(data.fecha_inicio);
     quitarEscribiendo();
     añadirMensaje('ia', data.respuesta);
+
+    if (data.cerrada_por_uso_indebido) {
+      mantenerBloqueado = true;
+      detenerReloj();
+      const aviso = document.createElement('div');
+      aviso.style.cssText = 'margin-top:12px;padding:10px 14px;background:#e8c9c2;border:1px solid var(--sello-oscuro);border-radius:3px;font-family:system-ui,sans-serif;font-size:0.85rem;color:var(--tinta);';
+      aviso.textContent = 'Esta sesión ha sido cerrada automáticamente. Puedes abrir una nueva sesión escribiendo un mensaje en una pestaña nueva o recargando la página.';
+      document.getElementById('chat').after(aviso);
+      sesionId = null;
+    }
   } catch (e) {
     quitarEscribiendo();
     alert('Hubo un problema al enviar el mensaje. Inténtalo de nuevo.');
   } finally {
-    btn.disabled = false;
-    input.disabled = false;
-    input.focus();
+    if (!mantenerBloqueado) {
+      btn.disabled = false;
+      input.disabled = false;
+      input.focus();
+    }
   }
 }
 
