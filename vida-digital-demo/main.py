@@ -86,9 +86,27 @@ original si lo que cuenta es interesante.
 
 Si en cambio la persona te pide algo que no tiene nada que ver con contar su vida
 (resolver un problema de matemáticas, escribir código, traducir un texto, hacerle
-de asistente general, etc.), no lo hagas. Dile con amabilidad que tu papel aquí es
-acompañarla a contar su historia, no resolver ese tipo de tareas, y retoma la
-conversación biográfica con una pregunta relacionada con lo último que sí contó.
+de asistente general, redactar textos ajenos a su biografía, etc.), sigue esta
+política de tres pasos — cuenta tú misma, revisando tus propios turnos anteriores
+en esta conversación, cuántas veces ya ha ocurrido esto:
+
+1ª vez: no lo hagas. Dile con amabilidad que tu papel aquí es acompañarla a contar
+su historia, no resolver ese tipo de tareas, y retoma la conversación biográfica
+con una pregunta relacionada con lo último que sí contó. Sin dramatizar.
+
+2ª vez en la misma conversación: repite la negativa, pero esta vez dile explícita
+y claramente que es el segundo aviso, y que si vuelve a pedir algo ajeno a la
+entrevista la sesión se cerrará. Sé directa y seria en este punto, sin perder
+la educación.
+
+3ª vez: no expliques ni negocies más. Tu respuesta debe empezar EXACTAMENTE con
+el texto "[CIERRE_POR_USO_INDEBIDO]" seguido de una frase breve y seria explicando
+que la sesión se cierra por uso indebido repetido, sin nada más después.
+
+Si la persona pide algo ajeno una sola vez y luego vuelve a hablar con normalidad
+de su vida, no sigas contando aviso tras aviso indefinidamente — pero si el patrón
+de pedir tareas ajenas se repite de forma clara, aplica los tres pasos sin
+excepciones ni margen adicional.
 
 Si tienes disponible su autopercepción declarada (cómo se describe a sí misma en
 un cuestionario), puedes usarla ocasionalmente para pedir un ejemplo concreto que
@@ -357,6 +375,18 @@ def enviar_mensaje(payload: MensajeIn):
     mensajes.append({"role": "assistant", "content": texto})
     guardar_mensajes(sesion_id, mensajes)
 
+    if texto.startswith(MARCADOR_CIERRE_USO_INDEBIDO):
+        texto_visible = texto[len(MARCADOR_CIERRE_USO_INDEBIDO):].strip()
+        with db() as conn:
+            conn.execute("UPDATE sesiones SET cerrada = 1 WHERE id = ?", (sesion_id,))
+        print(f"[AVISO] Sesión {sesion_id} cerrada automáticamente por uso indebido (usuario: {payload.usuario})")
+        return {
+            "sesion_id": sesion_id,
+            "respuesta": texto_visible,
+            "fecha_inicio": fecha_inicio,
+            "cerrada_por_uso_indebido": True,
+        }
+
     return {"sesion_id": sesion_id, "respuesta": texto, "fecha_inicio": fecha_inicio}
 
 
@@ -418,6 +448,7 @@ def cerrar_sesion(payload: CerrarSesionIn):
 
 
 MARCADOR_CONTEXTO_INTERNO = "Resumen de memoria acumulado hasta ahora"
+MARCADOR_CIERRE_USO_INDEBIDO = "[CIERRE_POR_USO_INDEBIDO]"
 
 
 def calcular_titulo(mensajes: list) -> str:
