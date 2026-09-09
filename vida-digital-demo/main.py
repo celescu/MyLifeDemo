@@ -14,12 +14,13 @@ import os
 import sqlite3
 import json
 import secrets
+import bcrypt
 from datetime import datetime
 from contextlib import contextmanager
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Response, Depends, HTTPException
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 import anthropic
 
@@ -31,40 +32,15 @@ MODEL = "claude-sonnet-4-6"
 PRECIO_INPUT_POR_MILLON = 2.0
 PRECIO_OUTPUT_POR_MILLON = 10.0
 
-# Usuario y contraseña para proteger el acceso a toda la app una vez esté
-# publicada en internet. Se leen de variables de entorno; si no existen,
-# la app no arranca protegida (solo pensado para uso local en tu propio PC).
-APP_USER = os.environ.get("APP_USER")
-APP_PASSWORD = os.environ.get("APP_PASSWORD")
+# Contraseña de administrador para crear cuentas de usuario nuevas (no es la
+# contraseña de ningún usuario, es solo para dar de alta cuentas) y para
+# decidir quién puede descargar la base de datos completa.
+ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD")
+ADMIN_USERNAME = os.environ.get("ADMIN_USERNAME", "yo")
 
 client = anthropic.Anthropic()  # usa la variable de entorno ANTHROPIC_API_KEY
 
 app = FastAPI()
-
-
-@app.middleware("http")
-async def proteger_con_password(request: Request, call_next):
-    # Si no se han configurado APP_USER/APP_PASSWORD, no se aplica protección
-    # (esto es lo que pasa ahora mismo en tu PC local).
-    if not APP_USER or not APP_PASSWORD:
-        return await call_next(request)
-
-    auth = request.headers.get("Authorization")
-    if auth:
-        try:
-            tipo, credenciales = auth.split(" ", 1)
-            import base64
-            usuario, password = base64.b64decode(credenciales).decode().split(":", 1)
-            if tipo == "Basic" and secrets.compare_digest(usuario, APP_USER) and secrets.compare_digest(password, APP_PASSWORD):
-                return await call_next(request)
-        except Exception:
-            pass
-
-    return Response(
-        status_code=401,
-        headers={"WWW-Authenticate": "Basic"},
-        content="Acceso restringido",
-    )
 
 SYSTEM_PROMPT_ENTREVISTA = """Eres una entrevistadora biográfica profesional, curiosa y paciente.
 Tu objetivo es ayudar a la persona a contar su vida con el máximo detalle posible,
@@ -255,6 +231,20 @@ def init_db():
                 respuestas TEXT NOT NULL
             )
         """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS usuarios (
+                usuario TEXT PRIMARY KEY,
+                password_hash TEXT NOT NULL,
+                creada TEXT NOT NULL
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS sesiones_login (
+                token TEXT PRIMARY KEY,
+                usuario TEXT NOT NULL,
+                creada TEXT NOT NULL
+            )
+        """)
         # migraciones: añadir columnas nuevas a bases de datos ya existentes
         # (CREATE TABLE IF NOT EXISTS no las añade si la tabla ya existía)
         for columna, definicion in [
@@ -272,19 +262,27 @@ init_db()
 
 
 class MensajeIn(BaseModel):
-    usuario: str = "yo"
     mensaje: str
     sesion_id: int | None = None
 
 
 class CerrarSesionIn(BaseModel):
-    usuario: str = "yo"
     sesion_id: int
 
 
 class AutopercepcionIn(BaseModel):
-    usuario: str = "yo"
     respuestas: dict  # { "conflicto": "texto de la opción elegida", ... }
+
+
+class LoginIn(BaseModel):
+    usuario: str
+    password: str
+
+
+class CrearUsuarioIn(BaseModel):
+    usuario: str
+    password: str
+    admin_password: str
 
 
 def cargar_autopercepcion(usuario: str) -> dict:
@@ -367,31 +365,98 @@ def marcar_cerrada(sesion_id: int):
         )
 
 
+def obtener_usuario_actual(request: Request) -> str:
+    token = request.cookies.get("session_token")
+    if not token:
+        raise HTTPException(status_code=401, detail="No has iniciado sesión")
+    with db() as conn:
+        row = conn.execute(
+            "SELECT usuario FROM sesiones_login WHERE token = ?", (token,)
+        ).fetchone()
+    if not row:
+        raise HTTPException(status_code=401, detail="Tu sesión ha caducado, inicia sesión de nuevo")
+    return row["usuario"]
+
+
+@app.get("/api/whoami")
+def whoami(usuario: str = Depends(obtener_usuario_actual)):
+    return {"usuario": usuario}
+
+
+@app.post("/api/login")
+def login(payload: LoginIn, response: Response):
+    with db() as conn:
+        row = conn.execute(
+            "SELECT password_hash FROM usuarios WHERE usuario = ?", (payload.usuario,)
+        ).fetchone()
+    if not row or not bcrypt.checkpw(payload.password.encode(), row["password_hash"].encode()):
+        raise HTTPException(status_code=401, detail="Usuario o contraseña incorrectos")
+
+    token = secrets.token_urlsafe(32)
+    with db() as conn:
+        conn.execute(
+            "INSERT INTO sesiones_login (token, usuario, creada) VALUES (?, ?, ?)",
+            (token, payload.usuario, datetime.utcnow().isoformat()),
+        )
+    response.set_cookie(
+        key="session_token", value=token, httponly=True, secure=True,
+        samesite="lax", max_age=60 * 60 * 24 * 30,
+    )
+    return {"ok": True, "usuario": payload.usuario}
+
+
+@app.post("/api/logout")
+def logout(request: Request, response: Response):
+    token = request.cookies.get("session_token")
+    if token:
+        with db() as conn:
+            conn.execute("DELETE FROM sesiones_login WHERE token = ?", (token,))
+    response.delete_cookie("session_token")
+    return {"ok": True}
+
+
+@app.post("/api/admin/crear-usuario")
+def crear_usuario(payload: CrearUsuarioIn):
+    if not ADMIN_PASSWORD or not secrets.compare_digest(payload.admin_password, ADMIN_PASSWORD):
+        raise HTTPException(status_code=403, detail="Contraseña de administrador incorrecta")
+
+    password_hash = bcrypt.hashpw(payload.password.encode(), bcrypt.gensalt()).decode()
+    with db() as conn:
+        try:
+            conn.execute(
+                "INSERT INTO usuarios (usuario, password_hash, creada) VALUES (?, ?, ?)",
+                (payload.usuario, password_hash, datetime.utcnow().isoformat()),
+            )
+        except sqlite3.IntegrityError:
+            raise HTTPException(status_code=400, detail="Ese nombre de usuario ya existe")
+    return {"ok": True}
+
+
 @app.get("/api/cuestionario")
-def obtener_cuestionario():
+def obtener_cuestionario(usuario: str = Depends(obtener_usuario_actual)):
     return CUESTIONARIO_AUTOPERCEPCION
 
 
 @app.get("/api/autopercepcion")
-def ver_autopercepcion(usuario: str = "yo"):
+def ver_autopercepcion(usuario: str = Depends(obtener_usuario_actual)):
     return cargar_autopercepcion(usuario)
 
 
 @app.post("/api/autopercepcion")
-def guardar_autopercepcion_endpoint(payload: AutopercepcionIn):
-    guardar_autopercepcion(payload.usuario, payload.respuestas)
+def guardar_autopercepcion_endpoint(payload: AutopercepcionIn, usuario: str = Depends(obtener_usuario_actual)):
+    guardar_autopercepcion(usuario, payload.respuestas)
     return {"ok": True}
 
 
 @app.post("/api/mensaje")
-def enviar_mensaje(payload: MensajeIn):
-    sesion_id, mensajes, fecha_inicio = obtener_o_crear_sesion(payload.usuario, payload.sesion_id)
-    resumen = cargar_resumen(payload.usuario)
+def enviar_mensaje(payload: MensajeIn, usuario: str = Depends(obtener_usuario_actual)):
+    sesion_id, mensajes, fecha_inicio = obtener_o_crear_sesion(usuario, payload.sesion_id)
+    resumen = cargar_resumen(usuario)
 
     if not mensajes:
         # primer mensaje de la sesión: inyectamos el resumen previo y la
         # autopercepción declarada (si existe) como contexto
-        autopercepcion = cargar_autopercepcion(payload.usuario)
+        autopercepcion = cargar_autopercepcion(usuario)
         bloque_autopercepcion = (
             f"\n\nAutopercepción que la persona ha declarado sobre sí misma "
             f"(respuestas a un cuestionario de opción múltiple, en sus propias "
@@ -425,7 +490,7 @@ def enviar_mensaje(payload: MensajeIn):
     if texto.startswith(MARCADOR_CIERRE_USO_INDEBIDO):
         texto_visible = texto[len(MARCADOR_CIERRE_USO_INDEBIDO):].strip()
         marcar_cerrada(sesion_id)
-        print(f"[AVISO] Sesión {sesion_id} cerrada automáticamente por uso indebido (usuario: {payload.usuario})")
+        print(f"[AVISO] Sesión {sesion_id} cerrada automáticamente por uso indebido (usuario: {usuario})")
         return {
             "sesion_id": sesion_id,
             "respuesta": texto_visible,
@@ -437,17 +502,17 @@ def enviar_mensaje(payload: MensajeIn):
 
 
 @app.post("/api/cerrar_sesion")
-def cerrar_sesion(payload: CerrarSesionIn):
+def cerrar_sesion(payload: CerrarSesionIn, usuario: str = Depends(obtener_usuario_actual)):
     with db() as conn:
         row = conn.execute(
             "SELECT mensajes FROM sesiones WHERE id = ? AND usuario = ?",
-            (payload.sesion_id, payload.usuario),
+            (payload.sesion_id, usuario),
         ).fetchone()
     if not row:
         return {"error": "sesión no encontrada"}
 
     mensajes = json.loads(row["mensajes"])
-    resumen_previo = cargar_resumen(payload.usuario)
+    resumen_previo = cargar_resumen(usuario)
 
     transcripcion = "\n".join(
         f"{m['role']}: {m['content']}" for m in mensajes if m["role"] in ("user", "assistant")
@@ -479,13 +544,13 @@ def cerrar_sesion(payload: CerrarSesionIn):
         (b for b in respuesta.content if b.type == "tool_use"), None
     )
     if bloque_herramienta is None:
-        print(f"[AVISO] El modelo no devolvió una llamada a la herramienta para {payload.usuario}")
+        print(f"[AVISO] El modelo no devolvió una llamada a la herramienta para {usuario}")
         print(f"[AVISO] stop_reason: {respuesta.stop_reason}, contenido: {respuesta.content}")
         return {"error": "no se pudo generar el resumen esta vez, la conversación sigue guardada íntegra"}
 
     nuevo_resumen = bloque_herramienta.input
 
-    guardar_resumen(payload.usuario, nuevo_resumen)
+    guardar_resumen(usuario, nuevo_resumen)
     sumar_tokens(payload.sesion_id, respuesta.usage.input_tokens, respuesta.usage.output_tokens)
     marcar_cerrada(payload.sesion_id)
 
@@ -505,7 +570,7 @@ def calcular_titulo(mensajes: list) -> str:
 
 
 @app.get("/api/sesiones")
-def listar_sesiones(usuario: str = "yo"):
+def listar_sesiones(usuario: str = Depends(obtener_usuario_actual)):
     with db() as conn:
         filas = conn.execute(
             "SELECT id, fecha, cerrada, mensajes FROM sesiones WHERE usuario = ? ORDER BY id DESC",
@@ -527,7 +592,7 @@ def listar_sesiones(usuario: str = "yo"):
 
 
 @app.get("/api/sesion/{sesion_id}")
-def ver_sesion(sesion_id: int, usuario: str = "yo"):
+def ver_sesion(sesion_id: int, usuario: str = Depends(obtener_usuario_actual)):
     with db() as conn:
         row = conn.execute(
             "SELECT mensajes FROM sesiones WHERE id = ? AND usuario = ?",
@@ -554,7 +619,7 @@ def contar_palabras_usuario(mensajes: list) -> int:
 
 
 @app.get("/api/metricas")
-def obtener_metricas(usuario: str = "yo"):
+def obtener_metricas(usuario: str = Depends(obtener_usuario_actual)):
     with db() as conn:
         filas = conn.execute(
             "SELECT id, fecha, fecha_cierre, cerrada, mensajes, tokens_input, tokens_output "
@@ -620,7 +685,9 @@ def obtener_metricas(usuario: str = "yo"):
 
 
 @app.get("/api/descargar-db")
-def descargar_db():
+def descargar_db(usuario: str = Depends(obtener_usuario_actual)):
+    if usuario != ADMIN_USERNAME:
+        raise HTTPException(status_code=403, detail="Solo el administrador puede descargar la base de datos completa")
     return FileResponse(
         DB_PATH,
         filename="memoria.db",
@@ -629,7 +696,7 @@ def descargar_db():
 
 
 @app.get("/api/memoria")
-def ver_memoria(usuario: str = "yo"):
+def ver_memoria(usuario: str = Depends(obtener_usuario_actual)):
     return cargar_resumen(usuario)
 
 

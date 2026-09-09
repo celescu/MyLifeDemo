@@ -16,7 +16,7 @@ echo Esperando a que arranque...
 timeout /t 4 >nul
 
 echo Abriendo el navegador...
-start "" http://localhost:8000
+start "" http://localhost:8000/login.html
 
 echo.
 echo Listo. Cuando termines, ve a la ventana llamada
