@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>Crear usuario — Admin</title>
+<style>
+  :root {
+    --papel: #f2e9d8; --papel-oscuro: #e8dcc4; --tinta: #3a3128;
+    --tinta-suave: #6b5f4f; --linea: #cdbd9f; --sello: #a8574a; --sello-oscuro: #8c453a;
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: 'Iowan Old Style', Georgia, serif;
+    background: var(--papel); color: var(--tinta);
+    max-width: 420px; margin: 80px auto; padding: 0 20px;
+  }
+  h2 { font-weight: 400; font-style: italic; color: var(--tinta-suave); border-bottom: 1px solid var(--linea); padding-bottom: 14px; }
+  label { display: block; font-family: system-ui, sans-serif; font-size: 0.8rem; color: var(--tinta-suave); margin-bottom: 4px; margin-top: 14px; }
+  input {
+    width: 100%; font-family: system-ui, sans-serif; font-size: 1rem;
+    background: var(--papel-oscuro); border: 1px solid var(--linea); border-radius: 2px;
+    padding: 10px 12px; color: var(--tinta);
+  }
+  button {
+    width: 100%; margin-top: 20px; font-family: system-ui, sans-serif; font-size: 0.9rem; font-weight: 600;
+    padding: 10px 16px; border-radius: 3px; border: 1px solid var(--sello-oscuro);
+    background: var(--sello); color: #f7ede0; cursor: pointer;
+  }
+  button:hover { background: var(--sello-oscuro); }
+  button:disabled { opacity: 0.6; cursor: not-allowed; }
+  #resultado { font-family: system-ui, sans-serif; font-size: 0.85rem; margin-top: 16px; }
+</style>
+</head>
+<body>
+  <h2>Crear cuenta de usuario</h2>
+  <p style="font-family: system-ui, sans-serif; font-size: 0.8rem; color: var(--tinta-suave);">
+    Solo tú, con la contraseña de administrador, puedes crear cuentas nuevas.
+    Esta página no está enlazada desde ningún sitio de la app.
+  </p>
+  <form id="form-crear">
+    <label>Nombre de usuario para la nueva cuenta</label>
+    <input type="text" id="usuario" required>
+    <label>Contraseña para esa cuenta</label>
+    <input type="password" id="password" required>
+    <label>Contraseña de administrador</label>
+    <input type="password" id="admin_password" required>
+    <button type="submit" id="btn-crear">Crear cuenta</button>
+  </form>
+  <p id="resultado"></p>
+
+<script>
+document.getElementById('form-crear').addEventListener('submit', async (ev) => {
+  ev.preventDefault();
+  const btn = document.getElementById('btn-crear');
+  const resultado = document.getElementById('resultado');
+  btn.disabled = true;
+  btn.textContent = 'Creando...';
+  resultado.textContent = '';
+
+  try {
+    const resp = await fetch('/api/admin/crear-usuario', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        usuario: document.getElementById('usuario').value,
+        password: document.getElementById('password').value,
+        admin_password: document.getElementById('admin_password').value,
+      }),
+    });
+    const data = await resp.json();
+    if (!resp.ok) {
+      resultado.style.color = '#8c453a';
+      resultado.textContent = data.detail || 'Hubo un error al crear la cuenta.';
+    } else {
+      resultado.style.color = '#3a3128';
+      resultado.textContent = 'Cuenta creada. Ya puede iniciar sesión en /login.html.';
+      document.getElementById('form-crear').reset();
+    }
+  } catch (e) {
+    resultado.style.color = '#8c453a';
+    resultado.textContent = 'Hubo un problema de conexión.';
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Crear cuenta';
+  }
+});
+</script>
+</body>
+</html>

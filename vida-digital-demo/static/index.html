@@ -261,7 +261,11 @@
 <body>
 
 <div id="vista-entrevista">
-  <h2>Mi vida — un archivo de recuerdos</h2>
+  <div style="display:flex; justify-content:space-between; align-items:baseline; flex-wrap:wrap; gap:8px;">
+    <h2 style="margin-bottom:0; border-bottom:none; padding-bottom:0; flex:1;">Mi vida — un archivo de recuerdos</h2>
+    <span id="usuario-conectado" style="font-family: system-ui, sans-serif; font-size: 0.75rem; color: var(--tinta-suave);"></span>
+  </div>
+  <div style="border-bottom: 1px solid var(--linea); padding-bottom: 14px; margin-bottom: 24px;"></div>
   <div id="reloj-sesion"><span class="punto-vivo"></span><span id="reloj-texto">Sesión en curso: 00:00</span></div>
   <div id="chat"></div>
   <textarea id="input" rows="3" placeholder="Escribe tu respuesta..."></textarea>
@@ -273,6 +277,7 @@
     <button onclick="abrirCuestionario()">Cuestionario de autopercepción</button>
     <button onclick="abrirMetricas()">Métricas de uso</button>
     <a href="/api/descargar-db" style="align-self: center; font-family: system-ui, sans-serif; font-size: 0.8rem; color: var(--tinta-suave);">Descargar copia de seguridad</a>
+    <button onclick="salir()" style="margin-left:auto;">Salir</button>
   </div>
   <pre id="memoria"></pre>
   <div id="lista-sesiones"></div>
@@ -303,6 +308,31 @@
 </div>
 
 <script>
+async function apiFetch(url, opts = {}) {
+  const resp = await fetch(url, { ...opts, credentials: 'same-origin' });
+  if (resp.status === 401) {
+    window.location.href = '/login.html';
+    throw new Error('No autenticado, redirigiendo a login');
+  }
+  return resp;
+}
+
+async function salir() {
+  await apiFetch('/api/logout', { method: 'POST' }).catch(() => {});
+  window.location.href = '/login.html';
+}
+
+async function comprobarSesion() {
+  try {
+    const resp = await apiFetch('/api/whoami');
+    const data = await resp.json();
+    document.getElementById('usuario-conectado').textContent = `Conectado como: ${data.usuario}`;
+  } catch (e) {
+    // apiFetch ya redirige a /login.html si no está autenticado
+  }
+}
+comprobarSesion();
+
 let sesionId = null;
 let transcripcionAbiertaId = null;
 let sesionInicioMs = null;
@@ -348,7 +378,7 @@ async function enviar() {
   let mantenerBloqueado = false;
 
   try {
-    const resp = await fetch('/api/mensaje', {
+    const resp = await apiFetch('/api/mensaje', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ mensaje: texto, sesion_id: sesionId })
@@ -415,7 +445,7 @@ async function cerrarSesionPorId(id, btn) {
   btn.disabled = true;
   btn.textContent = 'Generando resumen...';
   try {
-    const resp = await fetch('/api/cerrar_sesion', {
+    const resp = await apiFetch('/api/cerrar_sesion', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ sesion_id: id })
@@ -444,7 +474,7 @@ async function cerrarSesion(ev) {
   btn.disabled = true;
   btn.textContent = 'Generando resumen...';
   try {
-    const resp = await fetch('/api/cerrar_sesion', {
+    const resp = await apiFetch('/api/cerrar_sesion', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ sesion_id: sesionId })
@@ -480,7 +510,7 @@ async function verMemoria(ev) {
   btn.disabled = true;
   btn.textContent = 'Cargando...';
   try {
-    const resp = await fetch('/api/memoria');
+    const resp = await apiFetch('/api/memoria');
     const data = await resp.json();
     el.style.display = 'block';
     el.textContent = JSON.stringify(data, null, 2);
@@ -492,7 +522,7 @@ async function verMemoria(ev) {
 }
 
 async function refrescarListaSesiones() {
-  const resp = await fetch('/api/sesiones');
+  const resp = await apiFetch('/api/sesiones');
   const sesiones = await resp.json();
   const contenedor = document.getElementById('lista-sesiones');
   contenedor.innerHTML = '<h3>Sesiones guardadas (haz clic para ver la transcripción completa)</h3>';
@@ -564,7 +594,7 @@ async function verTranscripcion(id, titulo) {
     el.style.display = 'none';
     transcripcionAbiertaId = null;
   } else {
-    const resp = await fetch(`/api/sesion/${id}`);
+    const resp = await apiFetch(`/api/sesion/${id}`);
     const mensajes = await resp.json();
     el.style.display = 'block';
     const cuerpo = mensajes
@@ -592,8 +622,8 @@ async function abrirCuestionario() {
   document.getElementById('vista-cuestionario').style.display = 'block';
 
   const [respPreguntas, respGuardadas] = await Promise.all([
-    fetch('/api/cuestionario'),
-    fetch('/api/autopercepcion'),
+    apiFetch('/api/cuestionario'),
+    apiFetch('/api/autopercepcion'),
   ]);
   const preguntas = await respPreguntas.json();
   respuestasCuestionario = await respGuardadas.json();
@@ -643,7 +673,7 @@ async function guardarCuestionario() {
   btn.disabled = true;
   btn.textContent = 'Guardando...';
   try {
-    await fetch('/api/autopercepcion', {
+    await apiFetch('/api/autopercepcion', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ respuestas: respuestasCuestionario }),
@@ -675,7 +705,7 @@ async function abrirMetricas() {
   document.getElementById('vista-entrevista').style.display = 'none';
   document.getElementById('vista-metricas').style.display = 'block';
 
-  const resp = await fetch('/api/metricas');
+  const resp = await apiFetch('/api/metricas');
   const data = await resp.json();
 
   const t = data.totales;

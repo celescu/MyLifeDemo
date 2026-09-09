@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>Iniciar sesión — Mi vida</title>
+<style>
+  :root {
+    --papel: #f2e9d8;
+    --papel-oscuro: #e8dcc4;
+    --tinta: #3a3128;
+    --tinta-suave: #6b5f4f;
+    --linea: #cdbd9f;
+    --sello: #a8574a;
+    --sello-oscuro: #8c453a;
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: 'Iowan Old Style', 'Palatino Linotype', Palatino, Georgia, serif;
+    background: var(--papel);
+    color: var(--tinta);
+    max-width: 380px;
+    margin: 100px auto;
+    padding: 0 20px;
+  }
+  h2 {
+    font-weight: 400;
+    font-style: italic;
+    font-size: 1.5rem;
+    color: var(--tinta-suave);
+    border-bottom: 1px solid var(--linea);
+    padding-bottom: 14px;
+    margin-bottom: 24px;
+  }
+  label {
+    display: block;
+    font-family: system-ui, sans-serif;
+    font-size: 0.8rem;
+    color: var(--tinta-suave);
+    margin-bottom: 4px;
+  }
+  input {
+    width: 100%;
+    font-family: system-ui, sans-serif;
+    font-size: 1rem;
+    background: var(--papel-oscuro);
+    border: 1px solid var(--linea);
+    border-radius: 2px;
+    padding: 10px 12px;
+    color: var(--tinta);
+    margin-bottom: 16px;
+  }
+  input:focus { outline: 2px solid var(--sello); outline-offset: 1px; }
+  button {
+    width: 100%;
+    font-family: system-ui, sans-serif;
+    font-size: 0.9rem;
+    font-weight: 600;
+    padding: 10px 16px;
+    border-radius: 3px;
+    border: 1px solid var(--sello-oscuro);
+    background: var(--sello);
+    color: #f7ede0;
+    cursor: pointer;
+  }
+  button:hover { background: var(--sello-oscuro); }
+  button:disabled { opacity: 0.6; cursor: not-allowed; }
+  #error {
+    font-family: system-ui, sans-serif;
+    font-size: 0.82rem;
+    color: var(--sello-oscuro);
+    margin-top: 12px;
+    display: none;
+  }
+</style>
+</head>
+<body>
+  <h2>Mi vida — iniciar sesión</h2>
+  <form id="form-login">
+    <label for="usuario">Usuario</label>
+    <input type="text" id="usuario" autocomplete="username" required>
+    <label for="password">Contraseña</label>
+    <input type="password" id="password" autocomplete="current-password" required>
+    <button type="submit" id="btn-entrar">Entrar</button>
+  </form>
+  <p id="error"></p>
+
+<script>
+document.getElementById('form-login').addEventListener('submit', async (ev) => {
+  ev.preventDefault();
+  const btn = document.getElementById('btn-entrar');
+  const error = document.getElementById('error');
+  error.style.display = 'none';
+  btn.disabled = true;
+  btn.textContent = 'Entrando...';
+
+  try {
+    const resp = await fetch('/api/login', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        usuario: document.getElementById('usuario').value,
+        password: document.getElementById('password').value,
+      }),
+    });
+    if (!resp.ok) {
+      const data = await resp.json().catch(() => ({}));
+      error.textContent = data.detail || 'Usuario o contraseña incorrectos.';
+      error.style.display = 'block';
+      return;
+    }
+    window.location.href = '/';
+  } catch (e) {
+    error.textContent = 'Hubo un problema de conexión. Inténtalo de nuevo.';
+    error.style.display = 'block';
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Entrar';
+  }
+});
+</script>
+</body>
+</html>
