@@ -11,6 +11,14 @@ su propio usuario y contraseña:
   de otra persona.
 - Pensado para desplegarse en un hosting sencillo (ej. Railway) con SQLite;
   no necesita infraestructura compleja para un puñado de usuarios de prueba.
+- Incluye cuestionario de autopercepción, métricas de uso y coste, y
+  generación de una autobiografía narrativa a partir de lo contado.
+
+⚠️ IMPORTANTE si despliegas en Railway: NO añadas un archivo `Procfile` a
+este proyecto. Railway usa Railpack para detectar automáticamente que es
+una app de Python/FastAPI, y un Procfile presente confunde esa detección
+(ya nos pasó una vez: el despliegue fallaba en silencio y la app se quedaba
+congelada sirviendo una versión antigua). Deja que Railway lo detecte solo.
 
 ## Cómo ponerlo en marcha
 
@@ -74,6 +82,12 @@ su propio usuario y contraseña:
     ADMIN_USERNAME — cualquier otra persona recibirá un error de acceso
     denegado al pulsarlo, ya que descarga los datos de TODOS los usuarios.
 
+11. "Mi autobiografía" genera, a partir de la memoria acumulada, un texto
+    narrativo en primera persona ordenado cronológicamente. Es una
+    "instantánea": se genera bajo demanda y se puede volver a generar
+    cuantas veces quieras para que incluya las sesiones nuevas (cada
+    regeneración sustituye a la anterior, no se guarda un histórico).
+
 ## Qué mirar mientras lo pruebas
 
 - ¿Las preguntas se sienten naturales o repetitivas?
@@ -82,11 +96,11 @@ su propio usuario y contraseña:
   contaste, o pierde matices importantes?
 - ¿Cuánto tiempo aguantas hablando antes de cansarte? Eso te dice la
   duración real de sesión a diseñar.
+- ¿La autobiografía generada suena natural y respeta el orden cronológico,
+  o se nota artificial / repite cosas de los bloques temáticos?
 
 ## Siguiente paso natural
 
-Si esto funciona bien contigo, el siguiente paso sería:
-- Pulir el system prompt de la entrevistadora según lo que veas que falla.
-- Añadir un pequeño "resumen visible" al reabrir sesión ("la última vez
-  hablamos de tu infancia..."), para dar continuidad de cara al usuario.
-- Solo después, pensar en múltiples usuarios, login, y cobro.
+- Validar con 2-3 personas de confianza además de ti mismo.
+- Pensar en algún sistema de pago sencillo si la validación va bien
+  (sin necesidad todavía de base legal/empresarial formal).

@@ -114,12 +114,16 @@ SYSTEM_PROMPT_RESUMEN = """Vas a recibir un resumen de memoria previo (puede est
 y la transcripción de una nueva sesión de entrevista biográfica.
 
 Actualiza y amplía el resumen previo con lo nuevo de esta sesión, no lo sustituyas
-por completo: conserva lo anterior y añade/enriquece. Usa la herramienta que tienes
-disponible para guardar el resultado."""
+por completo: conserva lo anterior y añade/enriquece. Además de los bloques
+temáticos, mantén también una cronología: una lista de eventos concretos con su
+momento aproximado (edad o año, lo que se pueda deducir), ordenada de más
+antiguo a más reciente. Añade a la cronología los eventos nuevos que aparezcan
+en esta sesión, sin duplicar los que ya estuvieran. Usa la herramienta que
+tienes disponible para guardar el resultado."""
 
 HERRAMIENTA_RESUMEN = {
     "name": "guardar_resumen_memoria",
-    "description": "Guarda el resumen actualizado de la memoria biográfica de la persona, organizado por bloques temáticos.",
+    "description": "Guarda el resumen actualizado de la memoria biográfica de la persona, organizado por bloques temáticos y por una cronología de eventos.",
     "input_schema": {
         "type": "object",
         "properties": {
@@ -142,15 +146,50 @@ HERRAMIENTA_RESUMEN = {
                     "relaciones", "momentos_de_cambio", "valores", "aficiones", "otros",
                 ],
             },
+            "cronologia": {
+                "type": "array",
+                "description": "Eventos concretos ordenados de más antiguo a más reciente",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "momento": {"type": "string", "description": "Edad o año aproximado, ej. '~1990, nacimiento' o 'a los 10 años'"},
+                        "evento": {"type": "string", "description": "Descripción breve del evento"},
+                    },
+                    "required": ["momento", "evento"],
+                },
+            },
             "temas_pendientes": {
                 "type": "array",
                 "items": {"type": "string"},
                 "description": "Lista breve de temas apenas tocados o sin tocar todavía",
             },
         },
-        "required": ["bloques", "temas_pendientes"],
+        "required": ["bloques", "cronologia", "temas_pendientes"],
     },
 }
+
+
+SYSTEM_PROMPT_AUTOBIOGRAFIA = """Vas a recibir la memoria biográfica acumulada de una persona:
+una cronología de eventos y un conjunto de bloques temáticos con detalle narrativo.
+
+Tu tarea es redactar una autobiografía en primera persona, en formato Markdown,
+ordenada cronológicamente y dividida en capítulos naturales (por ejemplo:
+infancia, juventud, vida adulta — adapta los capítulos a lo que la cronología
+realmente contenga, no fuerces una estructura fija).
+
+Reglas:
+- Usa encabezados Markdown para los capítulos (## Nombre del capítulo).
+- Escribe en primera persona, con un tono narrativo natural, no como una lista
+  de datos ni como un informe.
+- Basa el texto SOLO en la información proporcionada. No inventes fechas,
+  nombres, ni detalles que no estén en el material. Si hay huecos temporales,
+  no los rellenes con suposiciones — simplemente pasa al siguiente evento
+  conocido.
+- Integra el detalle narrativo de los bloques temáticos en el lugar cronológico
+  que corresponda, no los repitas como secciones aparte.
+- No incluyas ningún comentario tuyo sobre el proceso, ni introducciones tipo
+  "aquí tienes tu autobiografía" — empieza directamente con el primer capítulo.
+"""
 
 
 CUESTIONARIO_AUTOPERCEPCION = [
@@ -245,6 +284,15 @@ def init_db():
                 creada TEXT NOT NULL
             )
         """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS autobiografia (
+                usuario TEXT PRIMARY KEY,
+                contenido TEXT NOT NULL,
+                fecha_generada TEXT NOT NULL,
+                tokens_input INTEGER DEFAULT 0,
+                tokens_output INTEGER DEFAULT 0
+            )
+        """)
         # migraciones: añadir columnas nuevas a bases de datos ya existentes
         # (CREATE TABLE IF NOT EXISTS no las añade si la tabla ya existía)
         for columna, definicion in [
@@ -310,8 +358,10 @@ def cargar_resumen(usuario: str) -> dict:
             "SELECT resumen FROM memoria WHERE usuario = ?", (usuario,)
         ).fetchone()
     if row:
-        return json.loads(row["resumen"])
-    return {"bloques": {}, "temas_pendientes": []}
+        resumen = json.loads(row["resumen"])
+        resumen.setdefault("cronologia", [])  # compatibilidad con resúmenes antiguos sin este campo
+        return resumen
+    return {"bloques": {}, "cronologia": [], "temas_pendientes": []}
 
 
 def guardar_resumen(usuario: str, resumen: dict):
@@ -671,15 +721,27 @@ def obtener_metricas(usuario: str = Depends(obtener_usuario_actual)):
         + total_tokens_output / 1_000_000 * PRECIO_OUTPUT_POR_MILLON
     )
 
+    with db() as conn:
+        fila_autobio = conn.execute(
+            "SELECT tokens_input, tokens_output FROM autobiografia WHERE usuario = ?", (usuario,)
+        ).fetchone()
+    tokens_input_autobio = fila_autobio["tokens_input"] if fila_autobio else 0
+    tokens_output_autobio = fila_autobio["tokens_output"] if fila_autobio else 0
+    coste_autobio = (
+        tokens_input_autobio / 1_000_000 * PRECIO_INPUT_POR_MILLON
+        + tokens_output_autobio / 1_000_000 * PRECIO_OUTPUT_POR_MILLON
+    )
+
     return {
         "sesiones": sesiones,
         "totales": {
             "num_sesiones": len(sesiones),
-            "tokens_input": total_tokens_input,
-            "tokens_output": total_tokens_output,
+            "tokens_input": total_tokens_input + tokens_input_autobio,
+            "tokens_output": total_tokens_output + tokens_output_autobio,
             "palabras_usuario": total_palabras,
             "duracion_segundos": total_segundos,
-            "coste_estimado": round(total_coste, 4),
+            "coste_estimado": round(total_coste + coste_autobio, 4),
+            "coste_autobiografia": round(coste_autobio, 4),
         },
     }
 
@@ -698,6 +760,54 @@ def descargar_db(usuario: str = Depends(obtener_usuario_actual)):
 @app.get("/api/memoria")
 def ver_memoria(usuario: str = Depends(obtener_usuario_actual)):
     return cargar_resumen(usuario)
+
+
+@app.get("/api/autobiografia")
+def ver_autobiografia(usuario: str = Depends(obtener_usuario_actual)):
+    with db() as conn:
+        row = conn.execute(
+            "SELECT contenido, fecha_generada FROM autobiografia WHERE usuario = ?",
+            (usuario,),
+        ).fetchone()
+    if not row:
+        return {"contenido": None, "fecha_generada": None}
+    return {"contenido": row["contenido"], "fecha_generada": row["fecha_generada"]}
+
+
+@app.post("/api/generar-autobiografia")
+def generar_autobiografia(usuario: str = Depends(obtener_usuario_actual)):
+    resumen = cargar_resumen(usuario)
+
+    if not resumen.get("cronologia") and not any(resumen.get("bloques", {}).values()):
+        return {"error": "todavía no hay suficiente memoria guardada para generar una autobiografía"}
+
+    respuesta = client.messages.create(
+        model=MODEL,
+        max_tokens=8000,
+        system=SYSTEM_PROMPT_AUTOBIOGRAFIA,
+        messages=[{
+            "role": "user",
+            "content": (
+                f"Cronología de eventos:\n{json.dumps(resumen.get('cronologia', []), ensure_ascii=False)}\n\n"
+                f"Bloques temáticos con detalle:\n{json.dumps(resumen.get('bloques', {}), ensure_ascii=False)}"
+            ),
+        }],
+    )
+    contenido = respuesta.content[0].text
+    fecha = datetime.utcnow().isoformat()
+
+    with db() as conn:
+        conn.execute(
+            "INSERT INTO autobiografia (usuario, contenido, fecha_generada, tokens_input, tokens_output) "
+            "VALUES (?, ?, ?, ?, ?) "
+            "ON CONFLICT(usuario) DO UPDATE SET contenido = excluded.contenido, "
+            "fecha_generada = excluded.fecha_generada, "
+            "tokens_input = autobiografia.tokens_input + excluded.tokens_input, "
+            "tokens_output = autobiografia.tokens_output + excluded.tokens_output",
+            (usuario, contenido, fecha, respuesta.usage.input_tokens, respuesta.usage.output_tokens),
+        )
+
+    return {"contenido": contenido, "fecha_generada": fecha}
 
 
 app.mount("/", StaticFiles(directory=os.path.join(os.path.dirname(__file__), "static"), html=True), name="static")
