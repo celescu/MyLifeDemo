@@ -256,6 +256,37 @@
     border-bottom: 1px solid var(--linea);
   }
   .tabla-metricas th { color: var(--tinta-suave); font-weight: 600; }
+
+  #vista-autobiografia .pagina-libro {
+    background: var(--papel-oscuro);
+    border: 1px solid var(--linea);
+    border-radius: 2px;
+    padding: 36px 40px;
+    box-shadow: inset 0 1px 3px rgba(90, 70, 40, 0.15);
+    line-height: 1.75;
+    font-size: 1.05rem;
+  }
+  .pagina-libro h2 {
+    font-size: 1.3rem;
+    border-bottom: none;
+    margin-top: 32px;
+    margin-bottom: 14px;
+    padding-bottom: 0;
+  }
+  .pagina-libro h2:first-child { margin-top: 0; }
+  .pagina-libro p { margin: 0 0 16px; }
+  .aviso-vacio {
+    font-family: system-ui, sans-serif;
+    font-size: 0.88rem;
+    color: var(--tinta-suave);
+    margin-bottom: 20px;
+  }
+  .fecha-generacion {
+    font-family: system-ui, sans-serif;
+    font-size: 0.72rem;
+    color: var(--tinta-suave);
+    margin-bottom: 12px;
+  }
 </style>
 </head>
 <body>
@@ -276,6 +307,7 @@
     <button onclick="verSesiones(event)">Ver sesiones guardadas</button>
     <button onclick="abrirCuestionario()">Cuestionario de autopercepción</button>
     <button onclick="abrirMetricas()">Métricas de uso</button>
+    <button onclick="abrirAutobiografia()">Mi autobiografía</button>
     <a href="/api/descargar-db" style="align-self: center; font-family: system-ui, sans-serif; font-size: 0.8rem; color: var(--tinta-suave);">Descargar copia de seguridad</a>
     <button onclick="salir()" style="margin-left:auto;">Salir</button>
   </div>
@@ -304,6 +336,16 @@
   <div id="tabla-metricas-sesiones"></div>
   <div class="acciones">
     <button onclick="volverASesionesDesdeMetricas()">Volver a sesiones</button>
+  </div>
+</div>
+
+<div id="vista-autobiografia" style="display: none;">
+  <h2>Mi autobiografía</h2>
+  <div id="fecha-autobiografia" class="fecha-generacion"></div>
+  <div id="contenido-autobiografia"></div>
+  <div class="acciones">
+    <button id="btn-generar-autobiografia" onclick="generarAutobiografia()">Generar / actualizar autobiografía</button>
+    <button onclick="volverASesionesDesdeAutobiografia()">Volver a sesiones</button>
   </div>
 </div>
 
@@ -715,7 +757,8 @@ async function abrirMetricas() {
     <div class="tarjeta-metrica"><span class="valor">${(t.tokens_input + t.tokens_output).toLocaleString('es-ES')}</span><span class="etiqueta">tokens totales</span></div>
     <div class="tarjeta-metrica"><span class="valor">${t.palabras_usuario.toLocaleString('es-ES')}</span><span class="etiqueta">palabras escritas</span></div>
     <div class="tarjeta-metrica"><span class="valor">${formatearDuracion(t.duracion_segundos)}</span><span class="etiqueta">tiempo total</span></div>
-    <div class="tarjeta-metrica"><span class="valor">$${t.coste_estimado.toFixed(3)}</span><span class="etiqueta">coste estimado</span></div>
+    <div class="tarjeta-metrica"><span class="valor">$${t.coste_estimado.toFixed(3)}</span><span class="etiqueta">coste estimado total</span></div>
+    <div class="tarjeta-metrica"><span class="valor">$${t.coste_autobiografia.toFixed(3)}</span><span class="etiqueta">coste autobiografía</span></div>
   `;
 
   dibujarGraficoCoste(data.sesiones);
@@ -778,6 +821,78 @@ function dibujarGraficoCoste(sesiones) {
 
 function volverASesionesDesdeMetricas() {
   document.getElementById('vista-metricas').style.display = 'none';
+  document.getElementById('vista-entrevista').style.display = 'block';
+}
+
+// --- Autobiografía ---
+
+function markdownSencilloAHtml(texto) {
+  const escapar = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const bloques = texto.split(/\n\s*\n/);
+  return bloques.map(bloque => {
+    const linea = bloque.trim();
+    if (linea.startsWith('## ')) {
+      return `<h2>${escapar(linea.slice(3))}</h2>`;
+    }
+    if (linea.startsWith('# ')) {
+      return `<h2>${escapar(linea.slice(2))}</h2>`;
+    }
+    if (linea === '') return '';
+    const conNegrita = escapar(linea).replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+    return `<p>${conNegrita.replace(/\n/g, '<br>')}</p>`;
+  }).join('\n');
+}
+
+async function abrirAutobiografia() {
+  document.getElementById('vista-entrevista').style.display = 'none';
+  document.getElementById('vista-autobiografia').style.display = 'block';
+
+  const resp = await apiFetch('/api/autobiografia');
+  const data = await resp.json();
+  pintarAutobiografia(data);
+}
+
+function pintarAutobiografia(data) {
+  const contenedor = document.getElementById('contenido-autobiografia');
+  const fechaEl = document.getElementById('fecha-autobiografia');
+
+  if (!data.contenido) {
+    fechaEl.textContent = '';
+    contenedor.innerHTML = '<p class="aviso-vacio">Todavía no has generado tu autobiografía. Pulsa el botón de abajo para crear un primer borrador a partir de lo que ya has contado — puedes volver a generarla más adelante para que incluya las sesiones nuevas.</p>';
+    return;
+  }
+
+  const fecha = new Date(data.fecha_generada.endsWith('Z') ? data.fecha_generada : data.fecha_generada + 'Z');
+  fechaEl.textContent = `Generada el ${fecha.toLocaleString()}`;
+  contenedor.innerHTML = `<div class="pagina-libro">${markdownSencilloAHtml(data.contenido)}</div>`;
+}
+
+async function generarAutobiografia() {
+  const btn = document.getElementById('btn-generar-autobiografia');
+  const textoOriginal = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = 'Escribiendo tu autobiografía...';
+  document.getElementById('contenido-autobiografia').innerHTML =
+    '<p class="aviso-vacio">Esto puede tardar unos segundos, se está redactando el texto completo.</p>';
+  try {
+    const resp = await apiFetch('/api/generar-autobiografia', { method: 'POST' });
+    const data = await resp.json();
+    if (data.error) {
+      alert('Aviso: ' + data.error);
+      pintarAutobiografia({ contenido: null });
+      return;
+    }
+    pintarAutobiografia(data);
+  } catch (e) {
+    alert('Hubo un problema al generar la autobiografía. Inténtalo de nuevo.');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = textoOriginal;
+  }
+}
+
+function volverASesionesDesdeAutobiografia() {
+  document.getElementById('vista-autobiografia').style.display = 'none';
   document.getElementById('vista-entrevista').style.display = 'block';
 }
 </script>
