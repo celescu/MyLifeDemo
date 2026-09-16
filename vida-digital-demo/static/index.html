@@ -308,7 +308,7 @@
     <button onclick="abrirCuestionario()">Cuestionario de autopercepción</button>
     <button onclick="abrirMetricas()">Métricas de uso</button>
     <button onclick="abrirAutobiografia()">Mi autobiografía</button>
-    <a href="/api/descargar-db" style="align-self: center; font-family: system-ui, sans-serif; font-size: 0.8rem; color: var(--tinta-suave);">Descargar copia de seguridad</a>
+    <button onclick="abrirMisDatos()">Mis datos</button>
     <button onclick="salir()" style="margin-left:auto;">Salir</button>
   </div>
   <pre id="memoria"></pre>
@@ -346,6 +346,45 @@
   <div class="acciones">
     <button id="btn-generar-autobiografia" onclick="generarAutobiografia()">Generar / actualizar autobiografía</button>
     <button onclick="volverASesionesDesdeAutobiografia()">Volver a sesiones</button>
+  </div>
+</div>
+
+<div id="vista-mis-datos" style="display: none;">
+  <h2>Mis datos</h2>
+  <p style="font-family: system-ui, sans-serif; font-size: 0.85rem; color: var(--tinta-suave); margin-bottom: 20px;">
+    Aquí puedes descargarte todo lo que has contado, restaurarlo desde una
+    copia anterior, o borrarlo por completo de este servidor. Restaurar o
+    borrar requiere que vuelvas a escribir tu contraseña, como confirmación.
+  </p>
+
+  <div style="margin-bottom:28px;">
+    <p style="font-family: system-ui, sans-serif; font-weight:600; font-size:0.9rem; margin-bottom:6px;">Exportar</p>
+    <button onclick="exportarMisDatos()">Descargar mi copia de seguridad</button>
+  </div>
+
+  <div style="margin-bottom:28px;">
+    <p style="font-family: system-ui, sans-serif; font-weight:600; font-size:0.9rem; margin-bottom:6px;">Restaurar</p>
+    <p style="font-family: system-ui, sans-serif; font-size: 0.78rem; color: var(--tinta-suave); margin-bottom:8px;">
+      ⚠️ Sustituye por completo tus datos actuales por los del archivo que subas.
+    </p>
+    <input type="file" id="archivo-mis-datos" accept=".json" style="margin-bottom:8px; display:block;">
+    <input type="password" id="password-restaurar-mios" placeholder="Tu contraseña" style="margin-bottom:8px; display:block; max-width:240px; font-family: system-ui, sans-serif; padding:8px; border:1px solid var(--linea); border-radius:2px; background:var(--papel-oscuro); color:var(--tinta);">
+    <button onclick="restaurarMisDatos()">Restaurar mis datos</button>
+  </div>
+
+  <div style="margin-bottom:28px;">
+    <p style="font-family: system-ui, sans-serif; font-weight:600; font-size:0.9rem; margin-bottom:6px; color: var(--sello-oscuro);">Borrar</p>
+    <p style="font-family: system-ui, sans-serif; font-size: 0.78rem; color: var(--tinta-suave); margin-bottom:8px;">
+      ⚠️ Borra permanentemente todas tus conversaciones, memoria, cuestionario y autobiografía. Tu cuenta seguirá existiendo, vacía.
+    </p>
+    <input type="password" id="password-borrar-mios" placeholder="Tu contraseña" style="margin-bottom:8px; display:block; max-width:240px; font-family: system-ui, sans-serif; padding:8px; border:1px solid var(--linea); border-radius:2px; background:var(--papel-oscuro); color:var(--tinta);">
+    <button onclick="borrarMisDatos()">Borrar todos mis datos</button>
+  </div>
+
+  <p id="resultado-mis-datos" style="font-family: system-ui, sans-serif; font-size: 0.85rem;"></p>
+
+  <div class="acciones">
+    <button onclick="volverASesionesDesdeMisDatos()">Volver a sesiones</button>
   </div>
 </div>
 
@@ -894,6 +933,84 @@ async function generarAutobiografia() {
 function volverASesionesDesdeAutobiografia() {
   document.getElementById('vista-autobiografia').style.display = 'none';
   document.getElementById('vista-entrevista').style.display = 'block';
+}
+
+// --- Mis datos (autoservicio) ---
+
+function abrirMisDatos() {
+  document.getElementById('vista-entrevista').style.display = 'none';
+  document.getElementById('vista-mis-datos').style.display = 'block';
+  document.getElementById('resultado-mis-datos').textContent = '';
+}
+
+function volverASesionesDesdeMisDatos() {
+  document.getElementById('vista-mis-datos').style.display = 'none';
+  document.getElementById('vista-entrevista').style.display = 'block';
+}
+
+function mostrarResultadoMisDatos(texto, esError) {
+  const el = document.getElementById('resultado-mis-datos');
+  el.style.color = esError ? '#8c453a' : 'var(--tinta)';
+  el.textContent = texto;
+}
+
+async function exportarMisDatos() {
+  try {
+    const resp = await apiFetch('/api/mis-datos/exportar');
+    const data = await resp.json();
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${data.usuario}_backup.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    mostrarResultadoMisDatos('Descarga iniciada.', false);
+  } catch (e) {
+    mostrarResultadoMisDatos('Hubo un problema al exportar tus datos.', true);
+  }
+}
+
+async function restaurarMisDatos() {
+  const archivo = document.getElementById('archivo-mis-datos').files[0];
+  const password = document.getElementById('password-restaurar-mios').value;
+  if (!archivo || !password) {
+    mostrarResultadoMisDatos('Selecciona un archivo y escribe tu contraseña.', true);
+    return;
+  }
+  if (!confirm('Esto sustituirá TODOS tus datos actuales por los del archivo. ¿Continuar?')) return;
+
+  try {
+    const formData = new FormData();
+    formData.append('archivo', archivo);
+    formData.append('password', password);
+    const resp = await apiFetch('/api/mis-datos/restaurar', { method: 'POST', body: formData });
+    const data = await resp.json();
+    mostrarResultadoMisDatos(resp.ok ? data.mensaje : (data.detail || 'Error al restaurar.'), !resp.ok);
+    if (resp.ok) document.getElementById('password-restaurar-mios').value = '';
+  } catch (e) {
+    mostrarResultadoMisDatos('Hubo un problema al restaurar tus datos.', true);
+  }
+}
+
+async function borrarMisDatos() {
+  const password = document.getElementById('password-borrar-mios').value;
+  if (!password) {
+    mostrarResultadoMisDatos('Escribe tu contraseña para confirmar.', true);
+    return;
+  }
+  if (!confirm('Esto BORRARÁ PERMANENTEMENTE todas tus conversaciones, memoria y autobiografía. ¿Estás seguro?')) return;
+
+  try {
+    const formData = new FormData();
+    formData.append('password', password);
+    const resp = await apiFetch('/api/mis-datos/borrar', { method: 'POST', body: formData });
+    const data = await resp.json();
+    mostrarResultadoMisDatos(resp.ok ? data.mensaje : (data.detail || 'Error al borrar.'), !resp.ok);
+    if (resp.ok) document.getElementById('password-borrar-mios').value = '';
+  } catch (e) {
+    mostrarResultadoMisDatos('Hubo un problema al borrar tus datos.', true);
+  }
 }
 </script>
 </body>
