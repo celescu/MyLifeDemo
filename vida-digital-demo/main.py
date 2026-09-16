@@ -18,7 +18,7 @@ import bcrypt
 from datetime import datetime
 from contextlib import contextmanager
 
-from fastapi import FastAPI, Request, Response, Depends, HTTPException
+from fastapi import FastAPI, Request, Response, Depends, HTTPException, UploadFile, File, Form
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
@@ -415,6 +415,58 @@ def marcar_cerrada(sesion_id: int):
         )
 
 
+def exportar_datos_usuario(usuario: str) -> dict:
+    with db() as conn:
+        sesiones = conn.execute("SELECT * FROM sesiones WHERE usuario = ?", (usuario,)).fetchall()
+        memoria = conn.execute("SELECT * FROM memoria WHERE usuario = ?", (usuario,)).fetchone()
+        autoperc = conn.execute("SELECT * FROM autopercepcion WHERE usuario = ?", (usuario,)).fetchone()
+        autobio = conn.execute("SELECT * FROM autobiografia WHERE usuario = ?", (usuario,)).fetchone()
+    return {
+        "formato": "backup-individual-v1",
+        "usuario": usuario,
+        "exportado_el": datetime.utcnow().isoformat(),
+        "sesiones": [dict(row) for row in sesiones],
+        "memoria": dict(memoria) if memoria else None,
+        "autopercepcion": dict(autoperc) if autoperc else None,
+        "autobiografia": dict(autobio) if autobio else None,
+    }
+
+
+def borrar_datos_usuario(usuario: str):
+    with db() as conn:
+        conn.execute("DELETE FROM sesiones WHERE usuario = ?", (usuario,))
+        conn.execute("DELETE FROM memoria WHERE usuario = ?", (usuario,))
+        conn.execute("DELETE FROM autopercepcion WHERE usuario = ?", (usuario,))
+        conn.execute("DELETE FROM autobiografia WHERE usuario = ?", (usuario,))
+
+
+def restaurar_datos_usuario(usuario: str, datos: dict):
+    borrar_datos_usuario(usuario)  # sustitución completa, no fusión
+    with db() as conn:
+        for s in datos.get("sesiones") or []:
+            conn.execute(
+                "INSERT INTO sesiones (usuario, fecha, mensajes, cerrada, fecha_cierre, tokens_input, tokens_output) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    usuario, s.get("fecha"), s.get("mensajes"), s.get("cerrada", 0),
+                    s.get("fecha_cierre"), s.get("tokens_input", 0), s.get("tokens_output", 0),
+                ),
+            )
+        m = datos.get("memoria")
+        if m:
+            conn.execute("INSERT INTO memoria (usuario, resumen) VALUES (?, ?)", (usuario, m.get("resumen")))
+        a = datos.get("autopercepcion")
+        if a:
+            conn.execute("INSERT INTO autopercepcion (usuario, respuestas) VALUES (?, ?)", (usuario, a.get("respuestas")))
+        ab = datos.get("autobiografia")
+        if ab:
+            conn.execute(
+                "INSERT INTO autobiografia (usuario, contenido, fecha_generada, tokens_input, tokens_output) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (usuario, ab.get("contenido"), ab.get("fecha_generada"), ab.get("tokens_input", 0), ab.get("tokens_output", 0)),
+            )
+
+
 def obtener_usuario_actual(request: Request) -> str:
     token = request.cookies.get("session_token")
     if not token:
@@ -755,6 +807,118 @@ def descargar_db(usuario: str = Depends(obtener_usuario_actual)):
         filename="memoria.db",
         media_type="application/octet-stream",
     )
+
+
+@app.post("/api/admin/restaurar-db")
+async def restaurar_db(admin_password: str = Form(...), archivo: UploadFile = File(...)):
+    if not ADMIN_PASSWORD or not secrets.compare_digest(admin_password, ADMIN_PASSWORD):
+        raise HTTPException(status_code=403, detail="Contraseña de administrador incorrecta")
+
+    contenido = await archivo.read()
+
+    # comprobación mínima de integridad: un SQLite válido empieza con esta cabecera
+    if not contenido.startswith(b"SQLite format 3\x00"):
+        raise HTTPException(status_code=400, detail="El archivo no parece ser una base de datos SQLite válida")
+
+    ruta_temporal = DB_PATH + ".restaurando.tmp"
+    with open(ruta_temporal, "wb") as f:
+        f.write(contenido)
+
+    # reemplazo atómico: si algo fallara a mitad, el archivo original queda intacto
+    os.replace(ruta_temporal, DB_PATH)
+
+    return {"ok": True, "mensaje": "Base de datos restaurada correctamente"}
+
+
+def verificar_password_de(usuario: str, password: str) -> bool:
+    with db() as conn:
+        row = conn.execute(
+            "SELECT password_hash FROM usuarios WHERE usuario = ?", (usuario,)
+        ).fetchone()
+    if not row:
+        return False
+    return bcrypt.checkpw(password.encode(), row["password_hash"].encode())
+
+
+@app.get("/api/mis-datos/exportar")
+def exportar_mis_datos(usuario: str = Depends(obtener_usuario_actual)):
+    return exportar_datos_usuario(usuario)
+
+
+@app.post("/api/mis-datos/restaurar")
+async def restaurar_mis_datos(
+    password: str = Form(...),
+    archivo: UploadFile = File(...),
+    usuario: str = Depends(obtener_usuario_actual),
+):
+    if not verificar_password_de(usuario, password):
+        raise HTTPException(status_code=403, detail="Contraseña incorrecta")
+    try:
+        datos = json.loads(await archivo.read())
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="El archivo no es un backup válido")
+    restaurar_datos_usuario(usuario, datos)
+    return {"ok": True, "mensaje": "Tus datos han sido restaurados"}
+
+
+@app.post("/api/mis-datos/borrar")
+def borrar_mis_datos(password: str = Form(...), usuario: str = Depends(obtener_usuario_actual)):
+    if not verificar_password_de(usuario, password):
+        raise HTTPException(status_code=403, detail="Contraseña incorrecta")
+    borrar_datos_usuario(usuario)
+    return {"ok": True, "mensaje": "Tus datos han sido borrados"}
+
+
+@app.post("/api/admin/listar-usuarios")
+def admin_listar_usuarios(admin_password: str = Form(...)):
+    if not ADMIN_PASSWORD or not secrets.compare_digest(admin_password, ADMIN_PASSWORD):
+        raise HTTPException(status_code=403, detail="Contraseña de administrador incorrecta")
+    with db() as conn:
+        filas = conn.execute("SELECT usuario, creada FROM usuarios ORDER BY creada").fetchall()
+    return [dict(f) for f in filas]
+
+
+@app.post("/api/admin/exportar-usuario")
+def admin_exportar_usuario(usuario: str = Form(...), admin_password: str = Form(...)):
+    if not ADMIN_PASSWORD or not secrets.compare_digest(admin_password, ADMIN_PASSWORD):
+        raise HTTPException(status_code=403, detail="Contraseña de administrador incorrecta")
+    return exportar_datos_usuario(usuario)
+
+
+@app.post("/api/admin/restaurar-usuario")
+async def admin_restaurar_usuario(
+    usuario: str = Form(...), admin_password: str = Form(...), archivo: UploadFile = File(...)
+):
+    if not ADMIN_PASSWORD or not secrets.compare_digest(admin_password, ADMIN_PASSWORD):
+        raise HTTPException(status_code=403, detail="Contraseña de administrador incorrecta")
+    try:
+        datos = json.loads(await archivo.read())
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="El archivo no es un backup válido")
+    restaurar_datos_usuario(usuario, datos)
+    return {"ok": True, "mensaje": f"Datos de '{usuario}' restaurados"}
+
+
+@app.post("/api/admin/borrar-usuario")
+def admin_borrar_usuario(usuario: str = Form(...), admin_password: str = Form(...)):
+    if not ADMIN_PASSWORD or not secrets.compare_digest(admin_password, ADMIN_PASSWORD):
+        raise HTTPException(status_code=403, detail="Contraseña de administrador incorrecta")
+    borrar_datos_usuario(usuario)
+    return {"ok": True, "mensaje": f"Datos de '{usuario}' borrados"}
+
+
+@app.post("/api/admin/borrar-todo")
+def admin_borrar_todo(admin_password: str = Form(...), confirmacion: str = Form(...)):
+    if not ADMIN_PASSWORD or not secrets.compare_digest(admin_password, ADMIN_PASSWORD):
+        raise HTTPException(status_code=403, detail="Contraseña de administrador incorrecta")
+    if confirmacion != "BORRAR TODO":
+        raise HTTPException(status_code=400, detail="Frase de confirmación incorrecta")
+    with db() as conn:
+        conn.execute("DELETE FROM sesiones")
+        conn.execute("DELETE FROM memoria")
+        conn.execute("DELETE FROM autopercepcion")
+        conn.execute("DELETE FROM autobiografia")
+    return {"ok": True, "mensaje": "Todos los datos de todos los usuarios han sido borrados"}
 
 
 @app.get("/api/memoria")
