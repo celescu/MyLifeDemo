@@ -261,7 +261,7 @@ CUESTIONARIO_AUTOPERCEPCION = [
 @contextmanager
 def db():
     conn = sqlcipher3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
+    conn.row_factory = sqlcipher3.Row
     conn.execute(f"PRAGMA key = \"x'{_clave_hex()}'\";")
     conn.execute("PRAGMA cipher_page_size = 4096;")
     conn.execute("PRAGMA kdf_iter = 256000;")
