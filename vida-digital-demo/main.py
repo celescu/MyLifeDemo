@@ -318,16 +318,19 @@ def init_db_sobre(conn):
         )
     """)
     # migraciones: añadir columnas nuevas a bases de datos ya existentes
-    # (CREATE TABLE IF NOT EXISTS no las añade si la tabla ya existía)
+    # (CREATE TABLE IF NOT EXISTS no las añade si la tabla ya existía).
+    # Comprobamos qué columnas existen ya en vez de capturar la excepción de
+    # "columna duplicada", porque su tipo exacto difiere entre sqlite3 (motor
+    # sin cifrar) y sqlcipher3 (motor cifrado), y depender de la clase de
+    # excepción de un driver concreto es frágil.
+    columnas_existentes = {fila[1] for fila in conn.execute("PRAGMA table_info(sesiones)").fetchall()}
     for columna, definicion in [
         ("fecha_cierre", "TEXT"),
         ("tokens_input", "INTEGER DEFAULT 0"),
         ("tokens_output", "INTEGER DEFAULT 0"),
     ]:
-        try:
+        if columna not in columnas_existentes:
             conn.execute(f"ALTER TABLE sesiones ADD COLUMN {columna} {definicion}")
-        except sqlite3.OperationalError:
-            pass  # la columna ya existe, no hay nada que hacer
 
 
 def init_db():
@@ -613,13 +616,15 @@ def crear_usuario(payload: CrearUsuarioIn):
 
     password_hash = bcrypt.hashpw(payload.password.encode(), bcrypt.gensalt()).decode()
     with db() as conn:
-        try:
-            conn.execute(
-                "INSERT INTO usuarios (usuario, password_hash, creada) VALUES (?, ?, ?)",
-                (payload.usuario, password_hash, datetime.utcnow().isoformat()),
-            )
-        except sqlite3.IntegrityError:
+        existe = conn.execute(
+            "SELECT 1 FROM usuarios WHERE usuario = ?", (payload.usuario,)
+        ).fetchone()
+        if existe:
             raise HTTPException(status_code=400, detail="Ese nombre de usuario ya existe")
+        conn.execute(
+            "INSERT INTO usuarios (usuario, password_hash, creada) VALUES (?, ?, ?)",
+            (payload.usuario, password_hash, datetime.utcnow().isoformat()),
+        )
     return {"ok": True}
 
 
