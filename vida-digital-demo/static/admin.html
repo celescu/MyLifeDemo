@@ -92,6 +92,19 @@
     <p class="resultado" id="resultado-total"></p>
   </div>
 
+  <h2>Copia residual sin cifrar (migración a SQLCipher)</h2>
+  <div class="caja">
+    <p class="aviso">
+      Al migrar automáticamente a la base de datos cifrada, se guarda una
+      copia temporal SIN cifrar por seguridad. Bórrala en cuanto confirmes
+      que todo funciona bien — mientras exista, anula el propósito del
+      cifrado.
+    </p>
+    <button onclick="comprobarBackupSinCifrar()">Comprobar si existe</button>
+    <button class="peligro" onclick="borrarBackupSinCifrar()">Borrar copia sin cifrar</button>
+    <p class="resultado" id="resultado-backup-plano"></p>
+  </div>
+
 <script>
 function passwordAdmin() {
   return document.getElementById('admin_password').value;
@@ -211,6 +224,30 @@ async function borrarTodo() {
     mostrar('resultado-total', resp.ok ? data.mensaje : (data.detail || 'Error.'), !resp.ok);
     if (resp.ok) document.getElementById('frase_confirmacion').value = '';
   } catch (e) { mostrar('resultado-total', 'Problema de conexión.', true); }
+}
+
+async function comprobarBackupSinCifrar() {
+  try {
+    const formData = new FormData();
+    formData.append('admin_password', passwordAdmin());
+    const resp = await fetch('/api/admin/comprobar-backup-sin-cifrar', { method: 'POST', credentials: 'same-origin', body: formData });
+    const data = await resp.json();
+    if (!resp.ok) { mostrar('resultado-backup-plano', data.detail || 'Error.', true); return; }
+    mostrar('resultado-backup-plano', data.existe
+      ? `Existe (${data.tamano_bytes} bytes). Bórrala cuando confirmes que todo funciona.`
+      : 'No existe ninguna copia sin cifrar pendiente.', false);
+  } catch (e) { mostrar('resultado-backup-plano', 'Problema de conexión.', true); }
+}
+
+async function borrarBackupSinCifrar() {
+  if (!confirm('¿Borrar definitivamente la copia sin cifrar del disco?')) return;
+  try {
+    const formData = new FormData();
+    formData.append('admin_password', passwordAdmin());
+    const resp = await fetch('/api/admin/borrar-backup-sin-cifrar', { method: 'POST', credentials: 'same-origin', body: formData });
+    const data = await resp.json();
+    mostrar('resultado-backup-plano', resp.ok ? data.mensaje : (data.detail || 'Error.'), !resp.ok);
+  } catch (e) { mostrar('resultado-backup-plano', 'Problema de conexión.', true); }
 }
 </script>
 </body>
