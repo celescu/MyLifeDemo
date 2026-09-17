@@ -18,6 +18,8 @@ import bcrypt
 from datetime import datetime
 from contextlib import contextmanager
 
+import sqlcipher3  # cifrado en reposo de la base de datos
+
 from fastapi import FastAPI, Request, Response, Depends, HTTPException, UploadFile, File, Form
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
@@ -37,6 +39,26 @@ PRECIO_OUTPUT_POR_MILLON = 10.0
 # decidir quién puede descargar la base de datos completa.
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD")
 ADMIN_USERNAME = os.environ.get("ADMIN_USERNAME", "yo")
+
+# Clave maestra de cifrado de la base de datos (SQLCipher). Protege el archivo
+# .db si alguien accediera a él sin pasar por la aplicación (robo del volumen,
+# una copia de seguridad filtrada, etc.). NO protege frente al propio
+# administrador, que conoce esta clave — para eso ya existe el sistema de
+# exportar/restaurar/borrar por usuario.
+DB_ENCRYPTION_KEY = os.environ.get("DB_ENCRYPTION_KEY")
+if not DB_ENCRYPTION_KEY or len(DB_ENCRYPTION_KEY) < 32:
+    raise RuntimeError(
+        "Falta la variable de entorno DB_ENCRYPTION_KEY, o es demasiado corta "
+        "(mínimo 32 caracteres). Genérala con: "
+        "python -c \"import secrets; print(secrets.token_urlsafe(48))\" "
+        "y configúrala en Railway antes de arrancar."
+    )
+
+
+def _clave_hex() -> str:
+    """SQLCipher acepta la clave en formato hexadecimal entre comillas."""
+    return DB_ENCRYPTION_KEY.encode("utf-8").hex()
+
 
 client = anthropic.Anthropic()  # usa la variable de entorno ANTHROPIC_API_KEY
 
@@ -238,8 +260,11 @@ CUESTIONARIO_AUTOPERCEPCION = [
 
 @contextmanager
 def db():
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlcipher3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
+    conn.execute(f"PRAGMA key = \"x'{_clave_hex()}'\";")
+    conn.execute("PRAGMA cipher_page_size = 4096;")
+    conn.execute("PRAGMA kdf_iter = 256000;")
     try:
         yield conn
         conn.commit()
@@ -247,65 +272,129 @@ def db():
         conn.close()
 
 
+def init_db_sobre(conn):
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS sesiones (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            usuario TEXT NOT NULL,
+            fecha TEXT NOT NULL,
+            mensajes TEXT NOT NULL,
+            cerrada INTEGER DEFAULT 0
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS memoria (
+            usuario TEXT PRIMARY KEY,
+            resumen TEXT NOT NULL
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS autopercepcion (
+            usuario TEXT PRIMARY KEY,
+            respuestas TEXT NOT NULL
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS usuarios (
+            usuario TEXT PRIMARY KEY,
+            password_hash TEXT NOT NULL,
+            creada TEXT NOT NULL
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS sesiones_login (
+            token TEXT PRIMARY KEY,
+            usuario TEXT NOT NULL,
+            creada TEXT NOT NULL
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS autobiografia (
+            usuario TEXT PRIMARY KEY,
+            contenido TEXT NOT NULL,
+            fecha_generada TEXT NOT NULL,
+            tokens_input INTEGER DEFAULT 0,
+            tokens_output INTEGER DEFAULT 0
+        )
+    """)
+    # migraciones: añadir columnas nuevas a bases de datos ya existentes
+    # (CREATE TABLE IF NOT EXISTS no las añade si la tabla ya existía)
+    for columna, definicion in [
+        ("fecha_cierre", "TEXT"),
+        ("tokens_input", "INTEGER DEFAULT 0"),
+        ("tokens_output", "INTEGER DEFAULT 0"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE sesiones ADD COLUMN {columna} {definicion}")
+        except sqlite3.OperationalError:
+            pass  # la columna ya existe, no hay nada que hacer
+
+
 def init_db():
     with db() as conn:
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS sesiones (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                usuario TEXT NOT NULL,
-                fecha TEXT NOT NULL,
-                mensajes TEXT NOT NULL,
-                cerrada INTEGER DEFAULT 0
-            )
-        """)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS memoria (
-                usuario TEXT PRIMARY KEY,
-                resumen TEXT NOT NULL
-            )
-        """)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS autopercepcion (
-                usuario TEXT PRIMARY KEY,
-                respuestas TEXT NOT NULL
-            )
-        """)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS usuarios (
-                usuario TEXT PRIMARY KEY,
-                password_hash TEXT NOT NULL,
-                creada TEXT NOT NULL
-            )
-        """)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS sesiones_login (
-                token TEXT PRIMARY KEY,
-                usuario TEXT NOT NULL,
-                creada TEXT NOT NULL
-            )
-        """)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS autobiografia (
-                usuario TEXT PRIMARY KEY,
-                contenido TEXT NOT NULL,
-                fecha_generada TEXT NOT NULL,
-                tokens_input INTEGER DEFAULT 0,
-                tokens_output INTEGER DEFAULT 0
-            )
-        """)
-        # migraciones: añadir columnas nuevas a bases de datos ya existentes
-        # (CREATE TABLE IF NOT EXISTS no las añade si la tabla ya existía)
-        for columna, definicion in [
-            ("fecha_cierre", "TEXT"),
-            ("tokens_input", "INTEGER DEFAULT 0"),
-            ("tokens_output", "INTEGER DEFAULT 0"),
-        ]:
-            try:
-                conn.execute(f"ALTER TABLE sesiones ADD COLUMN {columna} {definicion}")
-            except sqlite3.OperationalError:
-                pass  # la columna ya existe, no hay nada que hacer
+        init_db_sobre(conn)
 
 
+def migrar_a_cifrado_si_es_necesario():
+    """
+    Si memoria.db existe y está en SQLite normal (sin cifrar), lo convierte
+    a SQLCipher conservando todos los datos. Se ejecuta una sola vez al
+    arrancar; si la base ya está cifrada, no hace nada.
+    """
+    if not os.path.exists(DB_PATH):
+        return  # no hay nada que migrar, se creará cifrada desde cero
+
+    with open(DB_PATH, "rb") as f:
+        cabecera = f.read(16)
+
+    if not cabecera.startswith(b"SQLite format 3\x00"):
+        return  # ya está cifrada (una BD SQLCipher no empieza con esta cabecera)
+
+    print("[cifrado] Detectada base de datos sin cifrar. Migrando a SQLCipher...")
+    ruta_backup_plano = DB_PATH + ".sin_cifrar.backup"
+
+    # 1. Copia de seguridad del original, por si algo falla a mitad
+    with open(DB_PATH, "rb") as origen, open(ruta_backup_plano, "wb") as destino:
+        destino.write(origen.read())
+
+    # 2. Leer todos los datos con sqlite3 normal (sin cifrar)
+    conn_origen = sqlite3.connect(DB_PATH)
+    conn_origen.row_factory = sqlite3.Row
+    tablas = conn_origen.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+    ).fetchall()
+    datos_por_tabla = {}
+    for t in tablas:
+        nombre = t["name"]
+        filas = conn_origen.execute(f"SELECT * FROM {nombre}").fetchall()
+        datos_por_tabla[nombre] = [dict(f) for f in filas]
+    conn_origen.close()
+
+    # 3. Crear una base de datos nueva, cifrada, con el mismo esquema
+    os.remove(DB_PATH)
+    conn_destino = sqlcipher3.connect(DB_PATH)
+    conn_destino.execute(f"PRAGMA key = \"x'{_clave_hex()}'\";")
+    conn_destino.execute("PRAGMA cipher_page_size = 4096;")
+    conn_destino.execute("PRAGMA kdf_iter = 256000;")
+    init_db_sobre(conn_destino)
+
+    # 4. Volcar los datos originales dentro de la base ya cifrada
+    for nombre, filas in datos_por_tabla.items():
+        if not filas:
+            continue
+        columnas = list(filas[0].keys())
+        placeholders = ", ".join("?" for _ in columnas)
+        sql = f"INSERT INTO {nombre} ({', '.join(columnas)}) VALUES ({placeholders})"
+        for fila in filas:
+            conn_destino.execute(sql, tuple(fila[c] for c in columnas))
+    conn_destino.commit()
+    conn_destino.close()
+
+    print(f"[cifrado] Migración completada. Copia sin cifrar conservada en: {ruta_backup_plano}")
+    print("[cifrado] IMPORTANTE: borra ese archivo en cuanto confirmes que todo funciona bien.")
+
+
+migrar_a_cifrado_si_es_necesario()
 init_db()
 
 
@@ -815,17 +904,34 @@ async def restaurar_db(admin_password: str = Form(...), archivo: UploadFile = Fi
         raise HTTPException(status_code=403, detail="Contraseña de administrador incorrecta")
 
     contenido = await archivo.read()
-
-    # comprobación mínima de integridad: un SQLite válido empieza con esta cabecera
-    if not contenido.startswith(b"SQLite format 3\x00"):
-        raise HTTPException(status_code=400, detail="El archivo no parece ser una base de datos SQLite válida")
-
     ruta_temporal = DB_PATH + ".restaurando.tmp"
     with open(ruta_temporal, "wb") as f:
         f.write(contenido)
 
+    es_sqlite_plano = contenido.startswith(b"SQLite format 3\x00")
+
+    if not es_sqlite_plano:
+        # No tiene la cabecera de SQLite sin cifrar, así que debería ser un
+        # backup ya cifrado con SQLCipher: comprobamos que se puede abrir con
+        # nuestra clave actual antes de sustituir nada.
+        try:
+            conn_prueba = sqlcipher3.connect(ruta_temporal)
+            conn_prueba.execute(f"PRAGMA key = \"x'{_clave_hex()}'\";")
+            conn_prueba.execute("SELECT count(*) FROM sqlite_master;")
+            conn_prueba.close()
+        except Exception:
+            os.remove(ruta_temporal)
+            raise HTTPException(
+                status_code=400,
+                detail="El archivo no es una base de datos válida, o está cifrado con una clave distinta a la actual",
+            )
+
     # reemplazo atómico: si algo fallara a mitad, el archivo original queda intacto
     os.replace(ruta_temporal, DB_PATH)
+
+    # si lo subido era SQLite sin cifrar, lo migramos a cifrado ahora mismo
+    migrar_a_cifrado_si_es_necesario()
+    init_db()
 
     return {"ok": True, "mensaje": "Base de datos restaurada correctamente"}
 
@@ -919,6 +1025,27 @@ def admin_borrar_todo(admin_password: str = Form(...), confirmacion: str = Form(
         conn.execute("DELETE FROM autopercepcion")
         conn.execute("DELETE FROM autobiografia")
     return {"ok": True, "mensaje": "Todos los datos de todos los usuarios han sido borrados"}
+
+
+@app.post("/api/admin/comprobar-backup-sin-cifrar")
+def comprobar_backup_sin_cifrar(admin_password: str = Form(...)):
+    if not ADMIN_PASSWORD or not secrets.compare_digest(admin_password, ADMIN_PASSWORD):
+        raise HTTPException(status_code=403, detail="Contraseña de administrador incorrecta")
+    ruta = DB_PATH + ".sin_cifrar.backup"
+    if os.path.exists(ruta):
+        return {"existe": True, "tamano_bytes": os.path.getsize(ruta)}
+    return {"existe": False}
+
+
+@app.post("/api/admin/borrar-backup-sin-cifrar")
+def borrar_backup_sin_cifrar(admin_password: str = Form(...)):
+    if not ADMIN_PASSWORD or not secrets.compare_digest(admin_password, ADMIN_PASSWORD):
+        raise HTTPException(status_code=403, detail="Contraseña de administrador incorrecta")
+    ruta = DB_PATH + ".sin_cifrar.backup"
+    if os.path.exists(ruta):
+        os.remove(ruta)
+        return {"ok": True, "mensaje": "Copia sin cifrar eliminada"}
+    return {"ok": True, "mensaje": "No había ninguna copia sin cifrar que borrar"}
 
 
 @app.get("/api/memoria")

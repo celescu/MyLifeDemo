@@ -3,3 +3,4 @@ uvicorn
 anthropic
 bcrypt
 python-multipart
+sqlcipher3-binary
