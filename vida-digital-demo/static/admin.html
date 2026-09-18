@@ -92,6 +92,21 @@
     <p class="resultado" id="resultado-total"></p>
   </div>
 
+  <h2>Backups automáticos</h2>
+  <div class="caja">
+    <p class="aviso">
+      Se genera una copia cifrada de la base de datos completa cada 24 horas
+      de forma automática, y se conservan las últimas 7. Esto complementa
+      la descarga manual, no la sustituye — protege de errores de la propia
+      aplicación, pero no de una pérdida completa del volumen de Railway,
+      así que sigue siendo buena idea bajarte una copia de vez en cuando.
+    </p>
+    <button onclick="listarBackupsAutomaticos()">Ver backups disponibles</button>
+    <select id="selector_backup_automatico" style="margin-top:10px;"><option value="">— Carga la lista primero —</option></select>
+    <button onclick="descargarBackupAutomatico()">Descargar el backup seleccionado</button>
+    <p class="resultado" id="resultado-backups-automaticos"></p>
+  </div>
+
   <h2>Copia residual sin cifrar (migración a SQLCipher)</h2>
   <div class="caja">
     <p class="aviso">
@@ -248,6 +263,51 @@ async function borrarBackupSinCifrar() {
     const data = await resp.json();
     mostrar('resultado-backup-plano', resp.ok ? data.mensaje : (data.detail || 'Error.'), !resp.ok);
   } catch (e) { mostrar('resultado-backup-plano', 'Problema de conexión.', true); }
+}
+
+function formatearBytes(bytes) {
+  if (bytes < 1024) return bytes + ' B';
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+  return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+}
+
+async function listarBackupsAutomaticos() {
+  try {
+    const formData = new FormData();
+    formData.append('admin_password', passwordAdmin());
+    const resp = await fetch('/api/admin/listar-backups-automaticos', { method: 'POST', credentials: 'same-origin', body: formData });
+    const data = await resp.json();
+    if (!resp.ok) { mostrar('resultado-backups-automaticos', data.detail || 'Error.', true); return; }
+    const sel = document.getElementById('selector_backup_automatico');
+    if (data.length === 0) {
+      sel.innerHTML = '<option value="">— Todavía no hay backups automáticos —</option>';
+    } else {
+      sel.innerHTML = data.map(b => `<option value="${b.nombre}">${b.nombre} (${formatearBytes(b.tamano_bytes)})</option>`).join('');
+    }
+    mostrar('resultado-backups-automaticos', `${data.length} backup(s) disponibles.`, false);
+  } catch (e) { mostrar('resultado-backups-automaticos', 'Problema de conexión.', true); }
+}
+
+async function descargarBackupAutomatico() {
+  const nombre = document.getElementById('selector_backup_automatico').value;
+  if (!nombre) { mostrar('resultado-backups-automaticos', 'Carga y selecciona un backup primero.', true); return; }
+  try {
+    const formData = new FormData();
+    formData.append('admin_password', passwordAdmin());
+    formData.append('nombre', nombre);
+    const resp = await fetch('/api/admin/descargar-backup-automatico', { method: 'POST', credentials: 'same-origin', body: formData });
+    if (!resp.ok) {
+      const data = await resp.json();
+      mostrar('resultado-backups-automaticos', data.detail || 'Error.', true);
+      return;
+    }
+    const blob = await resp.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = nombre; a.click();
+    URL.revokeObjectURL(url);
+    mostrar('resultado-backups-automaticos', 'Descarga iniciada.', false);
+  } catch (e) { mostrar('resultado-backups-automaticos', 'Problema de conexión.', true); }
 }
 </script>
 </body>

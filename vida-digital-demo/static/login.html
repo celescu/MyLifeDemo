@@ -83,6 +83,11 @@
     <button type="submit" id="btn-entrar">Entrar</button>
   </form>
   <p id="error"></p>
+  <p style="font-family: system-ui, sans-serif; font-size: 0.78rem; color: var(--tinta-suave); margin-top: 20px;">
+    <a href="/" style="color: var(--tinta-suave);">← Volver a la presentación</a>
+    &nbsp;·&nbsp;
+    <a href="/seguridad.html" style="color: var(--tinta-suave);">Privacidad y seguridad</a>
+  </p>
 
 <script>
 document.getElementById('form-login').addEventListener('submit', async (ev) => {
@@ -109,7 +114,7 @@ document.getElementById('form-login').addEventListener('submit', async (ev) => {
       error.style.display = 'block';
       return;
     }
-    window.location.href = '/';
+    window.location.href = '/app.html';
   } catch (e) {
     error.textContent = 'Hubo un problema de conexión. Inténtalo de nuevo.';
     error.style.display = 'block';

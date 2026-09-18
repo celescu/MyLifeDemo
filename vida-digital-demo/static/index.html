@@ -2,7 +2,8 @@
 <html lang="es">
 <head>
 <meta charset="UTF-8">
-<title>Mi vida — demo</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mi vida — un archivo de recuerdos</title>
 <style>
   :root {
     --papel: #f2e9d8;
@@ -13,1005 +14,190 @@
     --sello: #a8574a;
     --sello-oscuro: #8c453a;
   }
-
   * { box-sizing: border-box; }
-
   body {
     font-family: 'Iowan Old Style', 'Palatino Linotype', Palatino, Georgia, serif;
     background: var(--papel);
-    background-image:
-      radial-gradient(rgba(139, 115, 85, 0.05) 1px, transparent 1px);
+    background-image: radial-gradient(rgba(139, 115, 85, 0.05) 1px, transparent 1px);
     background-size: 3px 3px;
     color: var(--tinta);
-    max-width: 640px;
-    margin: 48px auto;
-    padding: 0 20px 90px;
+    margin: 0;
+    padding: 0;
   }
-
-  h2 {
+  .envoltura {
+    max-width: 720px;
+    margin: 0 auto;
+    padding: 60px 24px 80px;
+  }
+  .hero {
+    text-align: center;
+    margin-bottom: 56px;
+  }
+  .hero h1 {
     font-weight: 400;
     font-style: italic;
-    font-size: 1.5rem;
-    color: var(--tinta-suave);
-    border-bottom: 1px solid var(--linea);
-    padding-bottom: 14px;
-    margin-bottom: 24px;
-    letter-spacing: 0.02em;
-  }
-
-  #chat {
-    background: var(--papel-oscuro);
-    border: 1px solid var(--linea);
-    border-radius: 2px;
-    box-shadow: inset 0 1px 3px rgba(90, 70, 40, 0.15);
-    padding: 20px 22px;
-    min-height: 280px;
-    margin-bottom: 16px;
-  }
-
-  .msg { margin-bottom: 16px; line-height: 1.55; font-size: 1.02rem; }
-  .msg .etiqueta {
-    display: block;
-    font-family: system-ui, sans-serif;
-    font-size: 0.7rem;
-    color: var(--tinta-suave);
-    margin-bottom: 3px;
-  }
-  .user { color: var(--tinta); }
-  .ia { color: var(--tinta-suave); font-style: italic; }
-
-  textarea {
-    width: 100%;
-    font-family: inherit;
-    font-size: 1rem;
-    background: var(--papel-oscuro);
-    border: 1px solid var(--linea);
-    border-radius: 2px;
-    padding: 10px 12px;
+    font-size: 2.1rem;
+    line-height: 1.35;
+    margin-bottom: 18px;
     color: var(--tinta);
-    resize: vertical;
   }
-  textarea:focus { outline: 2px solid var(--sello); outline-offset: 1px; }
-
-  .acciones { margin-top: 10px; display: flex; flex-wrap: wrap; gap: 8px; }
-
-  button {
-    font-family: system-ui, sans-serif;
-    font-size: 0.85rem;
-    padding: 9px 16px;
-    border-radius: 3px;
-    border: 1px solid var(--linea);
-    background: var(--papel);
+  .hero p.subtitulo {
+    font-size: 1.1rem;
     color: var(--tinta-suave);
-    cursor: pointer;
+    max-width: 520px;
+    margin: 0 auto 32px;
+    line-height: 1.6;
   }
-  button:hover { background: var(--papel-oscuro); }
-  button:disabled { opacity: 0.55; cursor: not-allowed; }
-  button:disabled:hover { background: var(--papel); }
-
-  .escribiendo {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    font-family: system-ui, sans-serif;
-    font-size: 0.8rem;
-    color: var(--tinta-suave);
-    font-style: italic;
-  }
-  .punto {
-    width: 6px; height: 6px;
-    border-radius: 50%;
-    background: var(--tinta-suave);
-    animation: parpadeo 1.1s infinite ease-in-out;
-  }
-  .punto:nth-child(2) { animation-delay: 0.15s; }
-  .punto:nth-child(3) { animation-delay: 0.3s; }
-  @keyframes parpadeo {
-    0%, 80%, 100% { opacity: 0.25; }
-    40% { opacity: 1; }
-  }
-
-  #btn-enviar {
-    background: var(--sello);
-    border-color: var(--sello-oscuro);
-    color: #f7ede0;
-    font-weight: 600;
-    letter-spacing: 0.02em;
-  }
-  #btn-enviar:hover { background: var(--sello-oscuro); }
-
-  #memoria, #transcripcion {
-    white-space: pre-wrap;
-    background: var(--papel-oscuro);
-    border: 1px solid var(--linea);
-    padding: 14px 16px;
-    border-radius: 2px;
-    font-family: 'Courier New', monospace;
-    font-size: 0.8rem;
-    color: var(--tinta-suave);
-    margin-top: 16px;
-    display: none;
-  }
-
-  .sesion-item {
-    font-family: system-ui, sans-serif;
-    font-size: 0.85rem;
-    padding: 10px 12px;
-    border: 1px solid var(--linea);
-    border-radius: 2px;
-    margin-top: 6px;
-    cursor: pointer;
-    color: var(--tinta-suave);
-    background: var(--papel);
-  }
-  .pregunta-cuestionario {
-    margin-bottom: 22px;
-    padding-bottom: 18px;
-    border-bottom: 1px solid var(--linea);
-  }
-  .pregunta-cuestionario p.enunciado {
-    font-size: 1rem;
-    margin-bottom: 10px;
-  }
-  .opcion-cuestionario {
-    display: block;
-    font-family: system-ui, sans-serif;
-    font-size: 0.9rem;
-    padding: 8px 10px;
-    margin-bottom: 6px;
-    border: 1px solid var(--linea);
-    border-radius: 3px;
-    cursor: pointer;
-    background: var(--papel-oscuro);
-  }
-  .opcion-cuestionario:hover { background: #ddcfab; }
-  .opcion-cuestionario.seleccionada {
-    background: var(--sello);
-    color: #f7ede0;
-    border-color: var(--sello-oscuro);
-  }
-  .opcion-cuestionario input { margin-right: 8px; }
-
-  button.activo {
-    background: var(--sello);
-    color: #f7ede0;
-    border-color: var(--sello-oscuro);
-  }
-  button.activo:hover { background: var(--sello-oscuro); }
-
-  .sesion-item.activa {
-    background: #ddb9a9;
-    border-color: var(--sello-oscuro);
-  }
-
-  #reloj-sesion {
-    position: fixed;
-    left: 50%;
-    bottom: 18px;
-    transform: translateX(-50%);
-    font-family: system-ui, sans-serif;
-    font-size: 0.8rem;
-    color: var(--tinta-suave);
-    background: var(--papel-oscuro);
-    border: 1px solid var(--linea);
-    padding: 8px 18px;
-    border-radius: 20px;
-    box-shadow: 0 2px 8px rgba(58, 49, 40, 0.2);
-    z-index: 1000;
-    display: none;
-  }
-  #reloj-sesion .punto-vivo {
+  .boton-principal {
     display: inline-block;
-    width: 6px; height: 6px;
-    border-radius: 50%;
-    background: var(--sello);
-    margin-right: 6px;
-    animation: parpadeo 2s infinite ease-in-out;
-  }
-
-  .sesion-cabecera {
+    font-family: system-ui, sans-serif;
+    font-size: 1rem;
     font-weight: 600;
-    display: block;
-    margin-bottom: 2px;
+    padding: 14px 32px;
+    border-radius: 4px;
+    background: var(--sello);
+    color: #f7ede0;
+    text-decoration: none;
+    border: 1px solid var(--sello-oscuro);
   }
-  .sesion-subtitulo {
-    font-size: 0.78rem;
-    opacity: 0.85;
-  }
+  .boton-principal:hover { background: var(--sello-oscuro); }
 
-  .tarjetas-metricas {
+  .bloque {
     display: flex;
-    flex-wrap: wrap;
-    gap: 12px;
-    margin-bottom: 24px;
-  }
-  .tarjeta-metrica {
-    flex: 1 1 130px;
+    gap: 20px;
+    align-items: flex-start;
     background: var(--papel-oscuro);
     border: 1px solid var(--linea);
     border-radius: 3px;
-    padding: 12px 14px;
-    font-family: system-ui, sans-serif;
+    padding: 22px 24px;
+    margin-bottom: 18px;
   }
-  .tarjeta-metrica .valor {
-    font-size: 1.3rem;
+  .bloque .numero {
+    font-family: system-ui, sans-serif;
+    font-size: 1.4rem;
+    font-weight: 700;
+    color: var(--sello);
+    flex-shrink: 0;
+    width: 32px;
+  }
+  .bloque h3 {
     font-weight: 600;
-    color: var(--sello-oscuro);
-    display: block;
-  }
-  .tarjeta-metrica .etiqueta {
-    font-size: 0.72rem;
-    color: var(--tinta-suave);
-  }
-
-  .tabla-metricas {
-    width: 100%;
-    border-collapse: collapse;
     font-family: system-ui, sans-serif;
-    font-size: 0.78rem;
+    font-size: 1.02rem;
+    margin: 0 0 6px;
   }
-  .tabla-metricas th, .tabla-metricas td {
-    text-align: left;
-    padding: 6px 8px;
-    border-bottom: 1px solid var(--linea);
+  .bloque p {
+    margin: 0;
+    line-height: 1.55;
+    color: var(--tinta);
   }
-  .tabla-metricas th { color: var(--tinta-suave); font-weight: 600; }
 
-  #vista-autobiografia .pagina-libro {
-    background: var(--papel-oscuro);
-    border: 1px solid var(--linea);
-    border-radius: 2px;
-    padding: 36px 40px;
-    box-shadow: inset 0 1px 3px rgba(90, 70, 40, 0.15);
-    line-height: 1.75;
-    font-size: 1.05rem;
-  }
-  .pagina-libro h2 {
+  h2.seccion {
+    font-weight: 400;
+    font-style: italic;
     font-size: 1.3rem;
-    border-bottom: none;
-    margin-top: 32px;
-    margin-bottom: 14px;
-    padding-bottom: 0;
-  }
-  .pagina-libro h2:first-child { margin-top: 0; }
-  .pagina-libro p { margin: 0 0 16px; }
-  .aviso-vacio {
-    font-family: system-ui, sans-serif;
-    font-size: 0.88rem;
     color: var(--tinta-suave);
-    margin-bottom: 20px;
+    border-bottom: 1px solid var(--linea);
+    padding-bottom: 12px;
+    margin: 48px 0 24px;
   }
-  .fecha-generacion {
-    font-family: system-ui, sans-serif;
-    font-size: 0.72rem;
+
+  .cita {
+    font-style: italic;
+    font-size: 1.15rem;
     color: var(--tinta-suave);
-    margin-bottom: 12px;
+    text-align: center;
+    max-width: 480px;
+    margin: 40px auto;
+    line-height: 1.6;
   }
+
+  .pie {
+    text-align: center;
+    margin-top: 56px;
+    font-family: system-ui, sans-serif;
+    font-size: 0.82rem;
+    color: var(--tinta-suave);
+  }
+  .pie a { color: var(--tinta-suave); }
 </style>
 </head>
 <body>
+<div class="envoltura">
 
-<div id="vista-entrevista">
-  <div style="display:flex; justify-content:space-between; align-items:baseline; flex-wrap:wrap; gap:8px;">
-    <h2 style="margin-bottom:0; border-bottom:none; padding-bottom:0; flex:1;">Mi vida — un archivo de recuerdos</h2>
-    <span id="usuario-conectado" style="font-family: system-ui, sans-serif; font-size: 0.75rem; color: var(--tinta-suave);"></span>
+  <div class="hero">
+    <h1>No podemos conservar una conciencia.<br>Pero sí podemos conservar tu historia.</h1>
+    <p class="subtitulo">
+      Una entrevistadora paciente te acompaña, sesión a sesión, a poner en
+      palabras tu vida — desde la infancia hasta hoy. Sin prisa, sin un
+      formulario que rellenar de una sentada.
+    </p>
+    <a href="/login.html" class="boton-principal">Empezar mi historia</a>
   </div>
-  <div style="border-bottom: 1px solid var(--linea); padding-bottom: 14px; margin-bottom: 24px;"></div>
-  <div id="reloj-sesion"><span class="punto-vivo"></span><span id="reloj-texto">Sesión en curso: 00:00</span></div>
-  <div id="chat"></div>
-  <textarea id="input" rows="3" placeholder="Escribe tu respuesta..."></textarea>
-  <div class="acciones">
-    <button id="btn-enviar" onclick="enviar()">Enviar</button>
-    <button onclick="cerrarSesion(event)">Cerrar sesión de hoy</button>
-    <button onclick="verMemoria(event)">Ver memoria acumulada</button>
-    <button onclick="verSesiones(event)">Ver sesiones guardadas</button>
-    <button onclick="abrirCuestionario()">Cuestionario de autopercepción</button>
-    <button onclick="abrirMetricas()">Métricas de uso</button>
-    <button onclick="abrirAutobiografia()">Mi autobiografía</button>
-    <button onclick="abrirMisDatos()">Mis datos</button>
-    <button onclick="salir()" style="margin-left:auto;">Salir</button>
-  </div>
-  <pre id="memoria"></pre>
-  <div id="lista-sesiones"></div>
-  <pre id="transcripcion"></pre>
-</div>
 
-<div id="vista-cuestionario" style="display: none;">
-  <h2>Cuestionario de autopercepción</h2>
-  <p style="font-family: system-ui, sans-serif; font-size: 0.85rem; color: var(--tinta-suave); margin-bottom: 20px;">
-    Así te describes tú mismo — no es un diagnóstico ni una evaluación, solo tu propia
-    forma de verte. Tus respuestas ayudarán a la entrevistadora a conocerte mejor.
+  <h2 class="seccion">Por qué podría interesarte</h2>
+
+  <div class="bloque">
+    <div class="numero">1</div>
+    <div>
+      <h3>Un archivo de tus recuerdos, no solo un cuestionario</h3>
+      <p>
+        Cada conversación se guarda y se organiza sola: por temas, y también
+        en el tiempo. Con el paso de las sesiones, tu vida va tomando forma
+        de relato — algo que hoy no está escrito en ningún sitio.
+      </p>
+    </div>
+  </div>
+
+  <div class="bloque">
+    <div class="numero">2</div>
+    <div>
+      <h3>Una oportunidad real de conocerte mejor</h3>
+      <p>
+        Contar la propia vida en voz alta, con alguien (o algo) que escucha
+        de verdad y pregunta con interés, tiene un efecto distinto a
+        pensarlo a solas. Un cuestionario aparte te invita también a
+        reflexionar sobre cómo te ves a ti mismo.
+      </p>
+    </div>
+  </div>
+
+  <div class="bloque">
+    <div class="numero">3</div>
+    <div>
+      <h3>A tu ritmo, en tantas sesiones como necesites</h3>
+      <p>
+        No hay que terminarlo en una tarde. Puedes hablar diez minutos hoy y
+        retomarlo la semana que viene — la entrevistadora recuerda por dónde
+        os quedasteis y continúa de forma natural.
+      </p>
+    </div>
+  </div>
+
+  <div class="bloque">
+    <div class="numero">4</div>
+    <div>
+      <h3>Con el tiempo, una autobiografía propia</h3>
+      <p>
+        Cuando quieras, puedes pedir que se redacte todo lo contado como un
+        relato ordenado y legible — un primer borrador de tu autobiografía,
+        escrito a partir de tus propias palabras.
+      </p>
+    </div>
+  </div>
+
+  <p class="cita">
+    "Conserva tu historia. Hazla consultable."
   </p>
-  <div id="preguntas-cuestionario"></div>
-  <div class="acciones">
-    <button id="btn-guardar-cuestionario" onclick="guardarCuestionario()">Guardar respuestas</button>
-    <button onclick="volverASesiones()">Volver a sesiones</button>
+
+  <div style="text-align:center; margin-top: 40px;">
+    <a href="/login.html" class="boton-principal">Empezar mi historia</a>
   </div>
+
+  <div class="pie">
+    <a href="/seguridad.html">Privacidad y medidas de seguridad</a>
+  </div>
+
 </div>
-
-<div id="vista-metricas" style="display: none;">
-  <h2>Métricas de uso</h2>
-  <div id="tarjetas-metricas-totales" class="tarjetas-metricas"></div>
-  <div id="grafico-metricas" style="margin-bottom: 24px;"></div>
-  <div id="tabla-metricas-sesiones"></div>
-  <div class="acciones">
-    <button onclick="volverASesionesDesdeMetricas()">Volver a sesiones</button>
-  </div>
-</div>
-
-<div id="vista-autobiografia" style="display: none;">
-  <h2>Mi autobiografía</h2>
-  <div id="fecha-autobiografia" class="fecha-generacion"></div>
-  <div id="contenido-autobiografia"></div>
-  <div class="acciones">
-    <button id="btn-generar-autobiografia" onclick="generarAutobiografia()">Generar / actualizar autobiografía</button>
-    <button onclick="volverASesionesDesdeAutobiografia()">Volver a sesiones</button>
-  </div>
-</div>
-
-<div id="vista-mis-datos" style="display: none;">
-  <h2>Mis datos</h2>
-  <p style="font-family: system-ui, sans-serif; font-size: 0.85rem; color: var(--tinta-suave); margin-bottom: 20px;">
-    Aquí puedes descargarte todo lo que has contado, restaurarlo desde una
-    copia anterior, o borrarlo por completo de este servidor. Restaurar o
-    borrar requiere que vuelvas a escribir tu contraseña, como confirmación.
-  </p>
-
-  <div style="margin-bottom:28px;">
-    <p style="font-family: system-ui, sans-serif; font-weight:600; font-size:0.9rem; margin-bottom:6px;">Exportar</p>
-    <button onclick="exportarMisDatos()">Descargar mi copia de seguridad</button>
-  </div>
-
-  <div style="margin-bottom:28px;">
-    <p style="font-family: system-ui, sans-serif; font-weight:600; font-size:0.9rem; margin-bottom:6px;">Restaurar</p>
-    <p style="font-family: system-ui, sans-serif; font-size: 0.78rem; color: var(--tinta-suave); margin-bottom:8px;">
-      ⚠️ Sustituye por completo tus datos actuales por los del archivo que subas.
-    </p>
-    <input type="file" id="archivo-mis-datos" accept=".json" style="margin-bottom:8px; display:block;">
-    <input type="password" id="password-restaurar-mios" placeholder="Tu contraseña" style="margin-bottom:8px; display:block; max-width:240px; font-family: system-ui, sans-serif; padding:8px; border:1px solid var(--linea); border-radius:2px; background:var(--papel-oscuro); color:var(--tinta);">
-    <button onclick="restaurarMisDatos()">Restaurar mis datos</button>
-  </div>
-
-  <div style="margin-bottom:28px;">
-    <p style="font-family: system-ui, sans-serif; font-weight:600; font-size:0.9rem; margin-bottom:6px; color: var(--sello-oscuro);">Borrar</p>
-    <p style="font-family: system-ui, sans-serif; font-size: 0.78rem; color: var(--tinta-suave); margin-bottom:8px;">
-      ⚠️ Borra permanentemente todas tus conversaciones, memoria, cuestionario y autobiografía. Tu cuenta seguirá existiendo, vacía.
-    </p>
-    <input type="password" id="password-borrar-mios" placeholder="Tu contraseña" style="margin-bottom:8px; display:block; max-width:240px; font-family: system-ui, sans-serif; padding:8px; border:1px solid var(--linea); border-radius:2px; background:var(--papel-oscuro); color:var(--tinta);">
-    <button onclick="borrarMisDatos()">Borrar todos mis datos</button>
-  </div>
-
-  <p id="resultado-mis-datos" style="font-family: system-ui, sans-serif; font-size: 0.85rem;"></p>
-
-  <div class="acciones">
-    <button onclick="volverASesionesDesdeMisDatos()">Volver a sesiones</button>
-  </div>
-</div>
-
-<script>
-async function apiFetch(url, opts = {}) {
-  const resp = await fetch(url, { ...opts, credentials: 'same-origin' });
-  if (resp.status === 401) {
-    window.location.href = '/login.html';
-    throw new Error('No autenticado, redirigiendo a login');
-  }
-  return resp;
-}
-
-async function salir() {
-  await apiFetch('/api/logout', { method: 'POST' }).catch(() => {});
-  window.location.href = '/login.html';
-}
-
-async function comprobarSesion() {
-  try {
-    const resp = await apiFetch('/api/whoami');
-    const data = await resp.json();
-    document.getElementById('usuario-conectado').textContent = `Conectado como: ${data.usuario}`;
-  } catch (e) {
-    // apiFetch ya redirige a /login.html si no está autenticado
-  }
-}
-comprobarSesion();
-
-let sesionId = null;
-let transcripcionAbiertaId = null;
-let sesionInicioMs = null;
-let intervaloReloj = null;
-
-function iniciarReloj(fechaIsoUtc) {
-  // fecha guardada como UTC sin sufijo 'Z' (datetime.utcnow().isoformat());
-  // se lo añadimos para que el navegador la interprete correctamente
-  const fechaConZ = fechaIsoUtc.endsWith('Z') ? fechaIsoUtc : fechaIsoUtc + 'Z';
-  sesionInicioMs = new Date(fechaConZ).getTime();
-  document.getElementById('reloj-sesion').style.display = 'block';
-  actualizarReloj();
-  if (intervaloReloj) clearInterval(intervaloReloj);
-  intervaloReloj = setInterval(actualizarReloj, 1000);
-}
-
-function actualizarReloj() {
-  if (sesionInicioMs === null) return;
-  const segundos = Math.max(0, Math.floor((Date.now() - sesionInicioMs) / 1000));
-  const mm = String(Math.floor(segundos / 60)).padStart(2, '0');
-  const ss = String(segundos % 60).padStart(2, '0');
-  document.getElementById('reloj-texto').textContent = `Sesión en curso: ${mm}:${ss}`;
-}
-
-function detenerReloj() {
-  if (intervaloReloj) clearInterval(intervaloReloj);
-  intervaloReloj = null;
-  sesionInicioMs = null;
-  document.getElementById('reloj-sesion').style.display = 'none';
-}
-
-async function enviar() {
-  const input = document.getElementById('input');
-  const texto = input.value.trim();
-  if (!texto) return;
-  añadirMensaje('user', texto);
-  input.value = '';
-
-  const btn = document.getElementById('btn-enviar');
-  btn.disabled = true;
-  input.disabled = true;
-  mostrarEscribiendo();
-  let mantenerBloqueado = false;
-
-  try {
-    const resp = await apiFetch('/api/mensaje', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ mensaje: texto, sesion_id: sesionId })
-    });
-    const data = await resp.json();
-    sesionId = data.sesion_id;
-    if (sesionInicioMs === null) iniciarReloj(data.fecha_inicio);
-    quitarEscribiendo();
-    añadirMensaje('ia', data.respuesta);
-
-    if (data.cerrada_por_uso_indebido) {
-      mantenerBloqueado = true;
-      detenerReloj();
-      const aviso = document.createElement('div');
-      aviso.style.cssText = 'margin-top:12px;padding:10px 14px;background:#e8c9c2;border:1px solid var(--sello-oscuro);border-radius:3px;font-family:system-ui,sans-serif;font-size:0.85rem;color:var(--tinta);';
-      aviso.textContent = 'Esta sesión ha sido cerrada automáticamente. Puedes abrir una nueva sesión escribiendo un mensaje en una pestaña nueva o recargando la página.';
-      document.getElementById('chat').after(aviso);
-      sesionId = null;
-    }
-  } catch (e) {
-    quitarEscribiendo();
-    alert('Hubo un problema al enviar el mensaje. Inténtalo de nuevo.');
-  } finally {
-    if (!mantenerBloqueado) {
-      btn.disabled = false;
-      input.disabled = false;
-      input.focus();
-    }
-  }
-}
-
-function mostrarEscribiendo() {
-  const chat = document.getElementById('chat');
-  const div = document.createElement('div');
-  div.id = 'indicador-escribiendo';
-  div.className = 'escribiendo';
-  div.innerHTML = 'la entrevistadora está pensando <span class="punto"></span><span class="punto"></span><span class="punto"></span>';
-  chat.appendChild(div);
-  chat.scrollTop = chat.scrollHeight;
-}
-
-function quitarEscribiendo() {
-  const el = document.getElementById('indicador-escribiendo');
-  if (el) el.remove();
-}
-
-function añadirMensaje(rol, texto) {
-  const chat = document.getElementById('chat');
-  const div = document.createElement('div');
-  div.className = 'msg ' + rol;
-  const etiqueta = document.createElement('span');
-  etiqueta.className = 'etiqueta';
-  etiqueta.textContent = rol === 'user' ? 'tú escribiste' : 'la entrevistadora';
-  const cuerpo = document.createElement('span');
-  cuerpo.textContent = texto;
-  div.appendChild(etiqueta);
-  div.appendChild(cuerpo);
-  chat.appendChild(div);
-  chat.scrollTop = chat.scrollHeight;
-}
-
-async function cerrarSesionPorId(id, btn) {
-  const textoOriginal = btn.textContent;
-  btn.disabled = true;
-  btn.textContent = 'Generando resumen...';
-  try {
-    const resp = await apiFetch('/api/cerrar_sesion', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sesion_id: id })
-    });
-    const data = await resp.json();
-    if (data.error) {
-      alert('Aviso: ' + data.error);
-      btn.disabled = false;
-      btn.textContent = textoOriginal;
-      return;
-    }
-    alert('Sesión #' + id + ' cerrada y memoria actualizada.');
-    if (sesionId === id) { sesionId = null; detenerReloj(); }
-    await refrescarListaSesiones();
-  } catch (e) {
-    alert('Hubo un problema al cerrar la sesión.');
-    btn.disabled = false;
-    btn.textContent = textoOriginal;
-  }
-}
-
-async function cerrarSesion(ev) {
-  if (!sesionId) { alert('Todavía no has empezado una sesión.'); return; }
-  const btn = ev.target;
-  const textoOriginal = btn.textContent;
-  btn.disabled = true;
-  btn.textContent = 'Generando resumen...';
-  try {
-    const resp = await apiFetch('/api/cerrar_sesion', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sesion_id: sesionId })
-    });
-    const data = await resp.json();
-    if (data.error) {
-      alert('Aviso: ' + data.error + '. Tu conversación no se ha perdido, pero el resumen no se actualizó esta vez. Revísalo con el desarrollador.');
-      return;
-    }
-    alert('Sesión cerrada y memoria actualizada. Puedes cerrar la pestaña y volver otro día.');
-    sesionId = null;
-    detenerReloj();
-    document.getElementById('chat').innerHTML = '';
-  } catch (e) {
-    alert('Hubo un problema al cerrar la sesión. Inténtalo de nuevo.');
-  } finally {
-    btn.disabled = false;
-    btn.textContent = textoOriginal;
-  }
-}
-
-async function verMemoria(ev) {
-  const btn = ev.target;
-  const el = document.getElementById('memoria');
-
-  if (el.style.display === 'block') {
-    el.style.display = 'none';
-    btn.classList.remove('activo');
-    return;
-  }
-
-  const textoOriginal = btn.textContent;
-  btn.disabled = true;
-  btn.textContent = 'Cargando...';
-  try {
-    const resp = await apiFetch('/api/memoria');
-    const data = await resp.json();
-    el.style.display = 'block';
-    el.textContent = JSON.stringify(data, null, 2);
-    btn.classList.add('activo');
-  } finally {
-    btn.disabled = false;
-    btn.textContent = textoOriginal;
-  }
-}
-
-async function refrescarListaSesiones() {
-  const resp = await apiFetch('/api/sesiones');
-  const sesiones = await resp.json();
-  const contenedor = document.getElementById('lista-sesiones');
-  contenedor.innerHTML = '<h3>Sesiones guardadas (haz clic para ver la transcripción completa)</h3>';
-  if (sesiones.length === 0) {
-    contenedor.innerHTML += '<p>Todavía no hay sesiones guardadas.</p>';
-    return;
-  }
-  sesiones.forEach(s => {
-    const div = document.createElement('div');
-    div.className = 'sesion-item';
-    div.dataset.sesionId = s.id;
-    if (transcripcionAbiertaId === s.id) div.classList.add('activa');
-
-    const fecha = new Date(s.fecha.endsWith('Z') ? s.fecha : s.fecha + 'Z').toLocaleString();
-
-    const texto = document.createElement('span');
-    texto.style.cursor = 'pointer';
-    texto.innerHTML =
-      `<span class="sesion-cabecera">${s.titulo}</span>` +
-      `<span class="sesion-subtitulo">#${s.id} — ${fecha} — ${s.num_turnos} turnos — ${s.cerrada ? 'cerrada' : 'abierta'}</span>`;
-    texto.onclick = () => verTranscripcion(s.id, s.titulo);
-    div.appendChild(texto);
-
-    if (!s.cerrada) {
-      const btnCerrar = document.createElement('button');
-      btnCerrar.textContent = 'Cerrar esta sesión';
-      btnCerrar.style.marginLeft = '10px';
-      btnCerrar.style.fontSize = '0.75rem';
-      btnCerrar.style.padding = '4px 10px';
-      btnCerrar.onclick = (e) => {
-        e.stopPropagation();
-        cerrarSesionPorId(s.id, btnCerrar);
-      };
-      div.appendChild(btnCerrar);
-    }
-
-    contenedor.appendChild(div);
-  });
-}
-
-async function verSesiones(ev) {
-  const btn = ev.target;
-  const contenedor = document.getElementById('lista-sesiones');
-
-  if (btn.classList.contains('activo')) {
-    contenedor.innerHTML = '';
-    contenedor.style.display = 'none';
-    btn.classList.remove('activo');
-    return;
-  }
-
-  const textoOriginal = btn.textContent;
-  btn.disabled = true;
-  btn.textContent = 'Cargando...';
-  try {
-    contenedor.style.display = 'block';
-    await refrescarListaSesiones();
-    btn.classList.add('activo');
-  } finally {
-    btn.disabled = false;
-    btn.textContent = textoOriginal;
-  }
-}
-
-async function verTranscripcion(id, titulo) {
-  const el = document.getElementById('transcripcion');
-
-  if (transcripcionAbiertaId === id) {
-    el.style.display = 'none';
-    transcripcionAbiertaId = null;
-  } else {
-    const resp = await apiFetch(`/api/sesion/${id}`);
-    const mensajes = await resp.json();
-    el.style.display = 'block';
-    const cuerpo = mensajes
-      .filter(m => m.role === 'user' || m.role === 'assistant')
-      .map(m => `[${m.role === 'user' ? 'TÚ' : 'IA'}] ${m.content}`)
-      .join('\n\n---\n\n');
-    el.textContent = `— ${titulo} —\n\n${cuerpo}`;
-    transcripcionAbiertaId = id;
-  }
-
-  document.querySelectorAll('.sesion-item').forEach(item => {
-    item.classList.toggle('activa', Number(item.dataset.sesionId) === transcripcionAbiertaId);
-  });
-}
-
-// Mensaje inicial para arrancar la conversación
-añadirMensaje('ia', 'Escribe algo (ej. "hola") para que empiece la entrevista.');
-
-// --- Cuestionario de autopercepción ---
-
-let respuestasCuestionario = {};
-
-async function abrirCuestionario() {
-  document.getElementById('vista-entrevista').style.display = 'none';
-  document.getElementById('vista-cuestionario').style.display = 'block';
-
-  const [respPreguntas, respGuardadas] = await Promise.all([
-    apiFetch('/api/cuestionario'),
-    apiFetch('/api/autopercepcion'),
-  ]);
-  const preguntas = await respPreguntas.json();
-  respuestasCuestionario = await respGuardadas.json();
-
-  const contenedor = document.getElementById('preguntas-cuestionario');
-  contenedor.innerHTML = '';
-
-  preguntas.forEach(p => {
-    const bloque = document.createElement('div');
-    bloque.className = 'pregunta-cuestionario';
-
-    const enunciado = document.createElement('p');
-    enunciado.className = 'enunciado';
-    enunciado.textContent = p.pregunta;
-    bloque.appendChild(enunciado);
-
-    p.opciones.forEach(opcion => {
-      const label = document.createElement('label');
-      label.className = 'opcion-cuestionario';
-      if (respuestasCuestionario[p.id] === opcion) {
-        label.classList.add('seleccionada');
-      }
-
-      const input = document.createElement('input');
-      input.type = 'radio';
-      input.name = p.id;
-      input.value = opcion;
-      input.checked = respuestasCuestionario[p.id] === opcion;
-      input.onchange = () => {
-        respuestasCuestionario[p.id] = opcion;
-        bloque.querySelectorAll('.opcion-cuestionario').forEach(o => o.classList.remove('seleccionada'));
-        label.classList.add('seleccionada');
-      };
-
-      label.appendChild(input);
-      label.appendChild(document.createTextNode(opcion));
-      bloque.appendChild(label);
-    });
-
-    contenedor.appendChild(bloque);
-  });
-}
-
-async function guardarCuestionario() {
-  const btn = document.getElementById('btn-guardar-cuestionario');
-  const textoOriginal = btn.textContent;
-  btn.disabled = true;
-  btn.textContent = 'Guardando...';
-  try {
-    await apiFetch('/api/autopercepcion', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ respuestas: respuestasCuestionario }),
-    });
-    alert('Respuestas guardadas. La entrevistadora las tendrá en cuenta a partir de tu próxima sesión.');
-  } catch (e) {
-    alert('Hubo un problema al guardar. Inténtalo de nuevo.');
-  } finally {
-    btn.disabled = false;
-    btn.textContent = textoOriginal;
-  }
-}
-
-function volverASesiones() {
-  document.getElementById('vista-cuestionario').style.display = 'none';
-  document.getElementById('vista-entrevista').style.display = 'block';
-}
-
-// --- Métricas de uso ---
-
-function formatearDuracion(segundos) {
-  const h = Math.floor(segundos / 3600);
-  const m = Math.floor((segundos % 3600) / 60);
-  if (h > 0) return `${h} h ${m} min`;
-  return `${m} min`;
-}
-
-async function abrirMetricas() {
-  document.getElementById('vista-entrevista').style.display = 'none';
-  document.getElementById('vista-metricas').style.display = 'block';
-
-  const resp = await apiFetch('/api/metricas');
-  const data = await resp.json();
-
-  const t = data.totales;
-  const tarjetas = document.getElementById('tarjetas-metricas-totales');
-  tarjetas.innerHTML = `
-    <div class="tarjeta-metrica"><span class="valor">${t.num_sesiones}</span><span class="etiqueta">sesiones</span></div>
-    <div class="tarjeta-metrica"><span class="valor">${(t.tokens_input + t.tokens_output).toLocaleString('es-ES')}</span><span class="etiqueta">tokens totales</span></div>
-    <div class="tarjeta-metrica"><span class="valor">${t.palabras_usuario.toLocaleString('es-ES')}</span><span class="etiqueta">palabras escritas</span></div>
-    <div class="tarjeta-metrica"><span class="valor">${formatearDuracion(t.duracion_segundos)}</span><span class="etiqueta">tiempo total</span></div>
-    <div class="tarjeta-metrica"><span class="valor">$${t.coste_estimado.toFixed(3)}</span><span class="etiqueta">coste estimado total</span></div>
-    <div class="tarjeta-metrica"><span class="valor">$${t.coste_autobiografia.toFixed(3)}</span><span class="etiqueta">coste autobiografía</span></div>
-  `;
-
-  dibujarGraficoCoste(data.sesiones);
-
-  const tabla = document.getElementById('tabla-metricas-sesiones');
-  if (data.sesiones.length === 0) {
-    tabla.innerHTML = '<p style="font-family: system-ui, sans-serif; font-size: 0.85rem;">Todavía no hay sesiones registradas.</p>';
-    return;
-  }
-  let filas = '';
-  data.sesiones.slice().reverse().forEach(s => {
-    filas += `<tr>
-      <td>${s.titulo}</td>
-      <td>${(s.tokens_input + s.tokens_output).toLocaleString('es-ES')}</td>
-      <td>${s.palabras_usuario}</td>
-      <td>${formatearDuracion(s.duracion_segundos)}</td>
-      <td>$${s.coste_estimado.toFixed(4)}</td>
-    </tr>`;
-  });
-  tabla.innerHTML = `
-    <table class="tabla-metricas">
-      <thead><tr><th>Sesión</th><th>Tokens</th><th>Palabras</th><th>Duración</th><th>Coste</th></tr></thead>
-      <tbody>${filas}</tbody>
-    </table>
-  `;
-}
-
-function dibujarGraficoCoste(sesiones) {
-  const contenedor = document.getElementById('grafico-metricas');
-  if (sesiones.length === 0) {
-    contenedor.innerHTML = '';
-    return;
-  }
-
-  const ancho = 560, alto = 160, margenInferior = 20, margenIzq = 4;
-  const maxCoste = Math.max(...sesiones.map(s => s.coste_estimado), 0.0001);
-  const anchoBarra = (ancho - margenIzq) / sesiones.length;
-
-  let barras = '';
-  sesiones.forEach((s, i) => {
-    const alturaBarra = (s.coste_estimado / maxCoste) * (alto - margenInferior - 10);
-    const x = margenIzq + i * anchoBarra + anchoBarra * 0.15;
-    const anchoReal = anchoBarra * 0.7;
-    const y = alto - margenInferior - alturaBarra;
-    barras += `<rect x="${x}" y="${y}" width="${anchoReal}" height="${Math.max(alturaBarra, 1)}" fill="#a8574a" rx="1">
-      <title>${s.titulo} — $${s.coste_estimado.toFixed(4)}</title>
-    </rect>`;
-  });
-
-  contenedor.innerHTML = `
-    <p style="font-family: system-ui, sans-serif; font-size: 0.78rem; color: var(--tinta-suave); margin-bottom: 6px;">
-      Coste estimado por sesión (pasa el ratón por encima de cada barra para ver el detalle)
-    </p>
-    <svg viewBox="0 0 ${ancho} ${alto}" style="width:100%; height:auto; background: var(--papel-oscuro); border:1px solid var(--linea); border-radius:3px;">
-      <line x1="0" y1="${alto - margenInferior}" x2="${ancho}" y2="${alto - margenInferior}" stroke="#cdbd9f" stroke-width="1" />
-      ${barras}
-    </svg>
-  `;
-}
-
-function volverASesionesDesdeMetricas() {
-  document.getElementById('vista-metricas').style.display = 'none';
-  document.getElementById('vista-entrevista').style.display = 'block';
-}
-
-// --- Autobiografía ---
-
-function markdownSencilloAHtml(texto) {
-  const escapar = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-  const bloques = texto.split(/\n\s*\n/);
-  return bloques.map(bloque => {
-    const linea = bloque.trim();
-    if (linea.startsWith('## ')) {
-      return `<h2>${escapar(linea.slice(3))}</h2>`;
-    }
-    if (linea.startsWith('# ')) {
-      return `<h2>${escapar(linea.slice(2))}</h2>`;
-    }
-    if (linea === '') return '';
-    const conNegrita = escapar(linea).replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
-    return `<p>${conNegrita.replace(/\n/g, '<br>')}</p>`;
-  }).join('\n');
-}
-
-async function abrirAutobiografia() {
-  document.getElementById('vista-entrevista').style.display = 'none';
-  document.getElementById('vista-autobiografia').style.display = 'block';
-
-  const resp = await apiFetch('/api/autobiografia');
-  const data = await resp.json();
-  pintarAutobiografia(data);
-}
-
-function pintarAutobiografia(data) {
-  const contenedor = document.getElementById('contenido-autobiografia');
-  const fechaEl = document.getElementById('fecha-autobiografia');
-
-  if (!data.contenido) {
-    fechaEl.textContent = '';
-    contenedor.innerHTML = '<p class="aviso-vacio">Todavía no has generado tu autobiografía. Pulsa el botón de abajo para crear un primer borrador a partir de lo que ya has contado — puedes volver a generarla más adelante para que incluya las sesiones nuevas.</p>';
-    return;
-  }
-
-  const fecha = new Date(data.fecha_generada.endsWith('Z') ? data.fecha_generada : data.fecha_generada + 'Z');
-  fechaEl.textContent = `Generada el ${fecha.toLocaleString()}`;
-  contenedor.innerHTML = `<div class="pagina-libro">${markdownSencilloAHtml(data.contenido)}</div>`;
-}
-
-async function generarAutobiografia() {
-  const btn = document.getElementById('btn-generar-autobiografia');
-  const textoOriginal = btn.textContent;
-  btn.disabled = true;
-  btn.textContent = 'Escribiendo tu autobiografía...';
-  document.getElementById('contenido-autobiografia').innerHTML =
-    '<p class="aviso-vacio">Esto puede tardar unos segundos, se está redactando el texto completo.</p>';
-  try {
-    const resp = await apiFetch('/api/generar-autobiografia', { method: 'POST' });
-    const data = await resp.json();
-    if (data.error) {
-      alert('Aviso: ' + data.error);
-      pintarAutobiografia({ contenido: null });
-      return;
-    }
-    pintarAutobiografia(data);
-  } catch (e) {
-    alert('Hubo un problema al generar la autobiografía. Inténtalo de nuevo.');
-  } finally {
-    btn.disabled = false;
-    btn.textContent = textoOriginal;
-  }
-}
-
-function volverASesionesDesdeAutobiografia() {
-  document.getElementById('vista-autobiografia').style.display = 'none';
-  document.getElementById('vista-entrevista').style.display = 'block';
-}
-
-// --- Mis datos (autoservicio) ---
-
-function abrirMisDatos() {
-  document.getElementById('vista-entrevista').style.display = 'none';
-  document.getElementById('vista-mis-datos').style.display = 'block';
-  document.getElementById('resultado-mis-datos').textContent = '';
-}
-
-function volverASesionesDesdeMisDatos() {
-  document.getElementById('vista-mis-datos').style.display = 'none';
-  document.getElementById('vista-entrevista').style.display = 'block';
-}
-
-function mostrarResultadoMisDatos(texto, esError) {
-  const el = document.getElementById('resultado-mis-datos');
-  el.style.color = esError ? '#8c453a' : 'var(--tinta)';
-  el.textContent = texto;
-}
-
-async function exportarMisDatos() {
-  try {
-    const resp = await apiFetch('/api/mis-datos/exportar');
-    const data = await resp.json();
-    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `${data.usuario}_backup.json`;
-    a.click();
-    URL.revokeObjectURL(url);
-    mostrarResultadoMisDatos('Descarga iniciada.', false);
-  } catch (e) {
-    mostrarResultadoMisDatos('Hubo un problema al exportar tus datos.', true);
-  }
-}
-
-async function restaurarMisDatos() {
-  const archivo = document.getElementById('archivo-mis-datos').files[0];
-  const password = document.getElementById('password-restaurar-mios').value;
-  if (!archivo || !password) {
-    mostrarResultadoMisDatos('Selecciona un archivo y escribe tu contraseña.', true);
-    return;
-  }
-  if (!confirm('Esto sustituirá TODOS tus datos actuales por los del archivo. ¿Continuar?')) return;
-
-  try {
-    const formData = new FormData();
-    formData.append('archivo', archivo);
-    formData.append('password', password);
-    const resp = await apiFetch('/api/mis-datos/restaurar', { method: 'POST', body: formData });
-    const data = await resp.json();
-    mostrarResultadoMisDatos(resp.ok ? data.mensaje : (data.detail || 'Error al restaurar.'), !resp.ok);
-    if (resp.ok) document.getElementById('password-restaurar-mios').value = '';
-  } catch (e) {
-    mostrarResultadoMisDatos('Hubo un problema al restaurar tus datos.', true);
-  }
-}
-
-async function borrarMisDatos() {
-  const password = document.getElementById('password-borrar-mios').value;
-  if (!password) {
-    mostrarResultadoMisDatos('Escribe tu contraseña para confirmar.', true);
-    return;
-  }
-  if (!confirm('Esto BORRARÁ PERMANENTEMENTE todas tus conversaciones, memoria y autobiografía. ¿Estás seguro?')) return;
-
-  try {
-    const formData = new FormData();
-    formData.append('password', password);
-    const resp = await apiFetch('/api/mis-datos/borrar', { method: 'POST', body: formData });
-    const data = await resp.json();
-    mostrarResultadoMisDatos(resp.ok ? data.mensaje : (data.detail || 'Error al borrar.'), !resp.ok);
-    if (resp.ok) document.getElementById('password-borrar-mios').value = '';
-  } catch (e) {
-    mostrarResultadoMisDatos('Hubo un problema al borrar tus datos.', true);
-  }
-}
-</script>
 </body>
 </html>

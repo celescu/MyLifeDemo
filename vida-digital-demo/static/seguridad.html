@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Privacidad y seguridad — Mi vida</title>
+<style>
+  :root {
+    --papel: #f2e9d8;
+    --papel-oscuro: #e8dcc4;
+    --tinta: #3a3128;
+    --tinta-suave: #6b5f4f;
+    --linea: #cdbd9f;
+    --sello: #a8574a;
+    --sello-oscuro: #8c453a;
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: 'Iowan Old Style', 'Palatino Linotype', Palatino, Georgia, serif;
+    background: var(--papel);
+    color: var(--tinta);
+    max-width: 680px;
+    margin: 0 auto;
+    padding: 56px 24px 80px;
+    line-height: 1.6;
+  }
+  h1 {
+    font-weight: 400;
+    font-style: italic;
+    font-size: 1.9rem;
+    border-bottom: 1px solid var(--linea);
+    padding-bottom: 16px;
+    margin-bottom: 12px;
+  }
+  p.intro {
+    color: var(--tinta-suave);
+    font-size: 1.02rem;
+    margin-bottom: 40px;
+  }
+  h2 {
+    font-family: system-ui, sans-serif;
+    font-size: 1.05rem;
+    font-weight: 700;
+    margin-top: 36px;
+    margin-bottom: 10px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  h2 .icono {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 26px; height: 26px;
+    border-radius: 50%;
+    background: var(--sello);
+    color: #f7ede0;
+    font-size: 0.85rem;
+    flex-shrink: 0;
+  }
+  .caja {
+    background: var(--papel-oscuro);
+    border: 1px solid var(--linea);
+    border-radius: 3px;
+    padding: 18px 22px;
+    margin-bottom: 8px;
+  }
+  .aviso-limite {
+    font-family: system-ui, sans-serif;
+    font-size: 0.85rem;
+    color: var(--sello-oscuro);
+    background: #f0dcd3;
+    border: 1px solid var(--sello);
+    border-radius: 3px;
+    padding: 16px 20px;
+    margin-top: 44px;
+  }
+  .volver {
+    display: inline-block;
+    margin-top: 40px;
+    font-family: system-ui, sans-serif;
+    font-size: 0.85rem;
+    color: var(--tinta-suave);
+    text-decoration: none;
+  }
+</style>
+</head>
+<body>
+
+  <h1>Privacidad y medidas de seguridad</h1>
+  <p class="intro">
+    Aquí explicamos, con honestidad y sin letra pequeña, qué hacemos para
+    proteger lo que nos cuentas, y también qué es lo que estas medidas
+    <strong>no</strong> garantizan — preferimos que lo sepas de antemano.
+  </p>
+
+  <h2><span class="icono">1</span> Contraseñas propias, cuentas separadas</h2>
+  <div class="caja">
+    <p>
+      Cada persona tiene su propio usuario y contraseña. Las contraseñas no
+      se guardan nunca en texto plano: se almacenan mediante un algoritmo de
+      cifrado unidireccional (bcrypt), de forma que ni siquiera quien
+      administra la aplicación puede verlas. Los datos de cada usuario están
+      separados de los de cualquier otro: nadie puede ver, sin querer o
+      buscándolo, las conversaciones de otra persona a través de la propia
+      aplicación.
+    </p>
+  </div>
+
+  <h2><span class="icono">2</span> La base de datos está cifrada</h2>
+  <div class="caja">
+    <p>
+      Toda la información — conversaciones, resúmenes, cuestionario,
+      autobiografía — se guarda cifrada en el servidor mediante SQLCipher,
+      un cifrado estándar de la industria. Esto protege los datos frente a
+      un acceso indebido al archivo en sí (por ejemplo, si alguien lograra
+      copiar el disco del servidor sin autorización).
+    </p>
+  </div>
+
+  <h2><span class="icono">3</span> Tú decides qué hacer con tus datos</h2>
+  <div class="caja">
+    <p>
+      Desde tu cuenta puedes, en cualquier momento: <strong>descargar</strong>
+      una copia completa de todo lo que has contado, <strong>restaurarla</strong>
+      si algo cambia, o <strong>borrar permanentemente</strong> todos tus
+      datos del servidor. Estas tres acciones requieren volver a escribir tu
+      contraseña, como confirmación de que eres tú quien las pide.
+    </p>
+  </div>
+
+  <h2><span class="icono">4</span> Copias de seguridad</h2>
+  <div class="caja">
+    <p>
+      Además de tu propia copia manual, el sistema genera automáticamente
+      una copia de seguridad cifrada de toda la aplicación cada 24 horas,
+      para protegerse de errores técnicos o fallos de la propia aplicación.
+    </p>
+  </div>
+
+  <h2><span class="icono">5</span> Un límite que preferimos contarte con claridad</h2>
+  <div class="caja">
+    <p>
+      El cifrado protege tus datos frente a accesos externos no autorizados.
+      No protege frente a quien administra el servicio, que técnicamente
+      podría acceder a los datos si así lo decidiera — como ocurre en
+      prácticamente cualquier servicio online que guarda información en un
+      servidor. Por eso existe la posibilidad de exportar y borrar tus
+      propios datos en cualquier momento: para que tengas control real,
+      no solo una promesa.
+    </p>
+  </div>
+
+  <div class="aviso-limite">
+    <strong>En resumen:</strong> nos tomamos en serio proteger lo que nos
+    cuentas, con medidas técnicas reales y verificables — pero preferimos
+    ser honestos sobre sus límites en vez de prometer más de lo que
+    podemos garantizar.
+  </div>
+
+  <a href="/" class="volver">← Volver a la presentación</a>
+
+</body>
+</html>
