@@ -13,6 +13,7 @@ Para el demo, hay un único usuario fijo ("yo") para simplificar.
 import os
 import sqlite3
 import json
+import asyncio
 import secrets
 import bcrypt
 from datetime import datetime
@@ -130,6 +131,16 @@ la ilustre o la contraste ("dijiste que te mantienes calmado ante un conflicto,
 ¿me cuentas alguna vez que lo vivieras así?"), pero no la menciones constantemente
 ni la trates como un hecho — es solo cómo ella misma se ve, no una verdad
 verificada.
+
+De vez en cuando, cuando encaje de forma natural con lo que se está contando,
+puedes preguntar si conserva alguna foto o vídeo de ese momento o esa época del
+que le apetezca hablar. Si responde que no tiene o no quiere hablar de ello, no
+insistas ni lo vuelvas a sacar en el resto de la sesión. Si en cambio la persona
+menciona fotos o vídeos por su cuenta varias veces a lo largo de las sesiones,
+tómalo como una señal de que es un tema que le importa, e invítala activamente
+a profundizar en ellos cuando surja la ocasión. Todo esto se queda en la
+conversación (descripción de la foto o el vídeo, lo que significa), nunca le
+pidas que suba ni envíe ningún archivo.
 """
 
 SYSTEM_PROMPT_RESUMEN = """Vas a recibir un resumen de memoria previo (puede estar vacío)
@@ -399,6 +410,65 @@ def migrar_a_cifrado_si_es_necesario():
 
 migrar_a_cifrado_si_es_necesario()
 init_db()
+
+
+# --- Backups automáticos ---
+# Cada 24h se genera una copia consistente de la base de datos (ya cifrada,
+# usando el propio mecanismo de "backup en caliente" de SQLite/SQLCipher para
+# no arriesgar corrupción si hay escrituras a la vez). Se guardan las últimas
+# NUM_BACKUPS_AUTOMATICOS_A_CONSERVAR copias; las más antiguas se van borrando
+# solas. Esto complementa, no sustituye, la descarga manual — sigue siendo
+# buena idea bajarte una copia de vez en cuando a tu propio ordenador, porque
+# esto protege de errores de la aplicación, no de la pérdida del volumen
+# entero de Railway.
+CARPETA_BACKUPS_AUTOMATICOS = os.path.join(os.path.dirname(DB_PATH), "backups_automaticos")
+NUM_BACKUPS_AUTOMATICOS_A_CONSERVAR = 7
+INTERVALO_BACKUP_SEGUNDOS = 24 * 60 * 60
+
+
+def hacer_backup_automatico():
+    os.makedirs(CARPETA_BACKUPS_AUTOMATICOS, exist_ok=True)
+    marca_tiempo = datetime.utcnow().strftime("%Y-%m-%d_%H%M%S_%f")
+    ruta_backup = os.path.join(CARPETA_BACKUPS_AUTOMATICOS, f"memoria_{marca_tiempo}.db")
+
+    origen = sqlcipher3.connect(DB_PATH)
+    origen.execute(f"PRAGMA key = \"x'{_clave_hex()}'\";")
+    destino = sqlcipher3.connect(ruta_backup)
+    destino.execute(f"PRAGMA key = \"x'{_clave_hex()}'\";")
+    origen.backup(destino)  # copia consistente aunque haya escrituras concurrentes
+    destino.close()
+    origen.close()
+
+    backups_existentes = sorted(os.listdir(CARPETA_BACKUPS_AUTOMATICOS))
+    while len(backups_existentes) > NUM_BACKUPS_AUTOMATICOS_A_CONSERVAR:
+        os.remove(os.path.join(CARPETA_BACKUPS_AUTOMATICOS, backups_existentes.pop(0)))
+
+    print(f"[backup] Copia automática creada: {ruta_backup}")
+
+
+async def bucle_backups_automaticos():
+    while True:
+        try:
+            await asyncio.to_thread(hacer_backup_automatico)
+        except Exception as e:
+            print(f"[backup] Error al generar la copia automática: {e}")
+        await asyncio.sleep(INTERVALO_BACKUP_SEGUNDOS)
+
+
+@app.on_event("startup")
+async def iniciar_tareas_de_fondo():
+    asyncio.create_task(bucle_backups_automaticos())
+
+
+def nombre_backup_valido(nombre: str) -> bool:
+    """Evita path traversal: solo se aceptan nombres con el formato exacto que generamos."""
+    return (
+        nombre.startswith("memoria_")
+        and nombre.endswith(".db")
+        and "/" not in nombre
+        and "\\" not in nombre
+        and ".." not in nombre
+    )
 
 
 class MensajeIn(BaseModel):
@@ -1051,6 +1121,33 @@ def borrar_backup_sin_cifrar(admin_password: str = Form(...)):
         os.remove(ruta)
         return {"ok": True, "mensaje": "Copia sin cifrar eliminada"}
     return {"ok": True, "mensaje": "No había ninguna copia sin cifrar que borrar"}
+
+
+@app.post("/api/admin/listar-backups-automaticos")
+def listar_backups_automaticos(admin_password: str = Form(...)):
+    if not ADMIN_PASSWORD or not secrets.compare_digest(admin_password, ADMIN_PASSWORD):
+        raise HTTPException(status_code=403, detail="Contraseña de administrador incorrecta")
+    if not os.path.exists(CARPETA_BACKUPS_AUTOMATICOS):
+        return []
+    resultado = []
+    for nombre in sorted(os.listdir(CARPETA_BACKUPS_AUTOMATICOS), reverse=True):
+        ruta = os.path.join(CARPETA_BACKUPS_AUTOMATICOS, nombre)
+        resultado.append({"nombre": nombre, "tamano_bytes": os.path.getsize(ruta)})
+    return resultado
+
+
+@app.post("/api/admin/descargar-backup-automatico")
+def descargar_backup_automatico(admin_password: str = Form(...), nombre: str = Form(...)):
+    if not ADMIN_PASSWORD or not secrets.compare_digest(admin_password, ADMIN_PASSWORD):
+        raise HTTPException(status_code=403, detail="Contraseña de administrador incorrecta")
+    if not nombre_backup_valido(nombre):
+        raise HTTPException(status_code=400, detail="Nombre de archivo no válido")
+    ruta = os.path.join(CARPETA_BACKUPS_AUTOMATICOS, nombre)
+    if not os.path.exists(ruta):
+        raise HTTPException(status_code=404, detail="Ese backup ya no existe")
+    return FileResponse(ruta, filename=nombre, media_type="application/octet-stream")
+
+
 
 
 @app.get("/api/memoria")

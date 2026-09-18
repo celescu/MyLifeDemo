@@ -13,6 +13,19 @@ su propio usuario y contraseña:
   no necesita infraestructura compleja para un puñado de usuarios de prueba.
 - Incluye cuestionario de autopercepción, métricas de uso y coste, y
   generación de una autobiografía narrativa a partir de lo contado.
+- Backups automáticos cada 24h (además de la descarga manual), y una
+  página de bienvenida pública que explica el proyecto.
+
+## Estructura de páginas
+
+- `/` (`index.html`) — página de bienvenida pública, explica el proyecto.
+  No requiere haber iniciado sesión.
+- `/login.html` — inicio de sesión.
+- `/app.html` — la aplicación en sí (chat, memoria, autobiografía...).
+  Requiere haber iniciado sesión; si no, redirige sola a `/login.html`.
+- `/seguridad.html` — página pública de privacidad y medidas de seguridad.
+- `/admin.html` — panel de administración (crear cuentas, backups,
+  exportar/restaurar/borrar). No enlazada desde ningún sitio público.
 
 ⚠️ IMPORTANTE si despliegas en Railway: NO añadas un archivo `Procfile` a
 este proyecto. Railway usa Railpack para detectar automáticamente que es
