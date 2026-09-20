@@ -420,8 +420,9 @@ def cargar_resumen(usuario: str) -> dict:
     if row:
         resumen = json.loads(row["resumen"])
         resumen.setdefault("cronologia", [])
+        resumen.setdefault("anio_nacimiento", None)
         return resumen
-    return {"bloques": {}, "cronologia": [], "temas_pendientes": []}
+    return {"bloques": {}, "cronologia": [], "anio_nacimiento": None, "temas_pendientes": []}
 
 
 def guardar_resumen(usuario: str, resumen: dict):
@@ -666,7 +667,9 @@ def enviar_mensaje(payload: MensajeIn, usuario: str = Depends(obtener_usuario_ac
             if autopercepcion else ""
         )
         contexto = (
-            f"Resumen de memoria acumulado hasta ahora (JSON):\n"
+            f"Año actual real: {datetime.utcnow().year}\n\n"
+            f"Resumen de memoria acumulado hasta ahora (JSON, incluye anio_nacimiento "
+            f"si ya se conoce):\n"
             f"{json.dumps(resumen, ensure_ascii=False)}"
             f"{bloque_autopercepcion}\n\n"
             f"Empieza la sesión de hoy. Si hay temas_pendientes, prioriza uno de ellos "
@@ -731,6 +734,9 @@ def cerrar_sesion(payload: CerrarSesionIn, usuario: str = Depends(obtener_usuari
         messages=[{
             "role": "user",
             "content": (
+                f"Año actual real: {datetime.utcnow().year}\n"
+                f"Año de nacimiento ya conocido (null si aún no se sabe): "
+                f"{json.dumps(resumen_previo.get('anio_nacimiento'))}\n\n"
                 f"Resumen previo:\n{json.dumps(resumen_previo, ensure_ascii=False)}\n\n"
                 f"Transcripción de la nueva sesión:\n{transcripcion}"
             ),
@@ -746,12 +752,34 @@ def cerrar_sesion(payload: CerrarSesionIn, usuario: str = Depends(obtener_usuari
         return {"error": "no se pudo generar el resumen esta vez, la conversación sigue guardada íntegra"}
 
     nuevo_resumen = bloque_herramienta.input
+    validar_coherencia_fechas(nuevo_resumen, usuario)
 
     guardar_resumen(usuario, nuevo_resumen)
     sumar_tokens(payload.sesion_id, respuesta.usage.input_tokens, respuesta.usage.output_tokens)
     marcar_cerrada(payload.sesion_id)
 
     return {"resumen": nuevo_resumen}
+
+
+def validar_coherencia_fechas(resumen: dict, usuario: str):
+    """
+    No corrige nada automáticamente (podría estar equivocándose sobre lo que
+    corrige), solo deja constancia en los logs si algún año de la cronología
+    no encaja con el año de nacimiento o con el año actual — para poder
+    revisarlo si los errores de fechas persisten pese al resto de medidas.
+    """
+    anio_nacimiento = resumen.get("anio_nacimiento")
+    anio_actual = datetime.utcnow().year
+    for evento in resumen.get("cronologia", []):
+        anio = evento.get("anio")
+        if anio is None:
+            continue
+        if anio_nacimiento is not None and anio < anio_nacimiento:
+            print(f"[AVISO] Posible error de fechas para {usuario}: evento '{evento.get('evento')}' "
+                  f"con año {anio}, anterior al año de nacimiento {anio_nacimiento}")
+        if anio > anio_actual:
+            print(f"[AVISO] Posible error de fechas para {usuario}: evento '{evento.get('evento')}' "
+                  f"con año {anio}, posterior al año actual {anio_actual}")
 
 
 MARCADOR_CONTEXTO_INTERNO = "Resumen de memoria acumulado hasta ahora"
@@ -1104,7 +1132,9 @@ def generar_autobiografia(usuario: str = Depends(obtener_usuario_actual)):
         messages=[{
             "role": "user",
             "content": (
-                f"Cronología de eventos:\n{json.dumps(resumen.get('cronologia', []), ensure_ascii=False)}\n\n"
+                f"Año de nacimiento (null si no se conoce): {json.dumps(resumen.get('anio_nacimiento'))}\n\n"
+                f"Cronología de eventos (cada uno ya trae su año calculado):\n"
+                f"{json.dumps(resumen.get('cronologia', []), ensure_ascii=False)}\n\n"
                 f"Bloques temáticos con detalle:\n{json.dumps(resumen.get('bloques', {}), ensure_ascii=False)}"
             ),
         }],
@@ -1151,6 +1181,20 @@ Tono:
 - No emitas juicios de valor sobre las decisiones o el comportamiento de la
   persona ni de terceros que mencione, ni en positivo ni en negativo.
   Mantente en el papel de quien escucha y pregunta, no de quien evalúa.
+
+Fechas y edades:
+- En el contexto tienes el año actual real y, si ya se conoce, el año de
+  nacimiento de la persona (campo anio_nacimiento). Si la persona dice
+  "cuando tenía X años", el año de ese momento es anio_nacimiento + X —
+  si necesitas decir ese año en voz alta, haz la suma con cuidado, cifra a
+  cifra si hace falta, no la des por hecha de memoria. Es un error fácil de
+  cometer y ya ha pasado antes.
+- Si todavía no conoces el año de nacimiento y en algún momento la persona
+  lo menciona (o da su fecha de nacimiento completa), tenlo en cuenta para
+  el resto de la conversación.
+- Si tienes dudas sobre en qué año ocurrió algo, es mejor preguntarlo
+  directamente ("¿en qué año fue eso, más o menos?") que arriesgarte a
+  calcularlo mal y decirlo como si fuera un hecho.
 
 Reglas:
 - Haz UNA pregunta a la vez, nunca varias juntas.
@@ -1208,23 +1252,46 @@ conversación (descripción de la foto o el vídeo, lo que significa), nunca le
 pidas que suba ni envíe ningún archivo.
 """
 
-SYSTEM_PROMPT_RESUMEN = """Vas a recibir un resumen de memoria previo (puede estar vacío)
-y la transcripción de una nueva sesión de entrevista biográfica.
+SYSTEM_PROMPT_RESUMEN = """Vas a recibir un resumen de memoria previo (puede estar vacío),
+el año de nacimiento de la persona si ya se conoce, el año actual real, y la
+transcripción de una nueva sesión de entrevista biográfica.
 
 Actualiza y amplía el resumen previo con lo nuevo de esta sesión, no lo sustituyas
 por completo: conserva lo anterior y añade/enriquece. Además de los bloques
-temáticos, mantén también una cronología: una lista de eventos concretos con su
-momento aproximado (edad o año, lo que se pueda deducir), ordenada de más
-antiguo a más reciente. Añade a la cronología los eventos nuevos que aparezcan
-en esta sesión, sin duplicar los que ya estuvieran. Usa la herramienta que
-tienes disponible para guardar el resultado."""
+temáticos, mantén también una cronología: una lista de eventos concretos,
+ordenada de más antiguo a más reciente. Añade a la cronología los eventos
+nuevos que aparezcan en esta sesión, sin duplicar los que ya estuvieran.
+
+Sobre las fechas, sigue esto con mucho cuidado, porque es una fuente frecuente
+de errores:
+
+- Si en algún momento la persona menciona directamente su año de nacimiento
+  (o una fecha de nacimiento completa), guárdalo en el campo "anio_nacimiento".
+  Una vez conocido, nunca lo cambies ni lo recalcules.
+- Para cada evento de la cronología, calcula su año exacto ("anio") así:
+  si la persona dio un año concreto, usa ese año directamente. Si en cambio
+  dio una edad ("cuando tenía 20 años"), y el año de nacimiento ya se conoce,
+  calcula: anio_nacimiento + edad = anio del evento. Haz esta suma con
+  cuidado, cifra a cifra si hace falta — es un error común equivocarse aquí.
+  Si no hay año de nacimiento conocido todavía ni año explícito, deja "anio"
+  en null en vez de adivinar.
+- Antes de terminar, revisa que cada "anio" de la cronología sea coherente:
+  ningún evento puede tener un año anterior a anio_nacimiento, y ninguno
+  puede ser posterior al año actual que se te ha indicado. Si algo no
+  cuadra, revisa el cálculo en vez de dejarlo así.
+
+Usa la herramienta que tienes disponible para guardar el resultado."""
 
 HERRAMIENTA_RESUMEN = {
     "name": "guardar_resumen_memoria",
-    "description": "Guarda el resumen actualizado de la memoria biográfica de la persona, organizado por bloques temáticos y por una cronología de eventos.",
+    "description": "Guarda el resumen actualizado de la memoria biográfica de la persona, organizado por bloques temáticos y por una cronología de eventos con años exactos.",
     "input_schema": {
         "type": "object",
         "properties": {
+            "anio_nacimiento": {
+                "type": ["integer", "null"],
+                "description": "Año de nacimiento de la persona si ya se conoce (verbatim, tal como lo dijo o se dedujo de una fecha completa), o null si todavía no se sabe.",
+            },
             "bloques": {
                 "type": "object",
                 "properties": {
@@ -1250,10 +1317,14 @@ HERRAMIENTA_RESUMEN = {
                 "items": {
                     "type": "object",
                     "properties": {
-                        "momento": {"type": "string", "description": "Edad o año aproximado, ej. '~1990, nacimiento' o 'a los 10 años'"},
+                        "anio": {
+                            "type": ["integer", "null"],
+                            "description": "Año exacto en el que ocurrió, calculado con cuidado (ver instrucciones), o null si no se puede determinar todavía",
+                        },
+                        "momento": {"type": "string", "description": "Descripción del momento en palabras de la persona, ej. 'a los 10 años' o 'recién casado'"},
                         "evento": {"type": "string", "description": "Descripción breve del evento"},
                     },
-                    "required": ["momento", "evento"],
+                    "required": ["anio", "momento", "evento"],
                 },
             },
             "temas_pendientes": {
@@ -1262,7 +1333,7 @@ HERRAMIENTA_RESUMEN = {
                 "description": "Lista breve de temas apenas tocados o sin tocar todavía",
             },
         },
-        "required": ["bloques", "cronologia", "temas_pendientes"],
+        "required": ["anio_nacimiento", "bloques", "cronologia", "temas_pendientes"],
     },
 }
 
@@ -1285,6 +1356,11 @@ Reglas:
   conocido.
 - Integra el detalle narrativo de los bloques temáticos en el lugar cronológico
   que corresponda, no los repitas como secciones aparte.
+- Cada evento de la cronología ya trae su año calculado (campo "anio"). Usa
+  ese año directamente si necesitas mencionarlo; no vuelvas a calcularlo tú
+  a partir de edades mencionadas en los bloques temáticos, para no introducir
+  un nuevo error de suma sobre un cálculo que ya estaba hecho. Si el año de
+  un evento es null, no inventes uno ni lo menciones como si fuera exacto.
 - No incluyas ningún comentario tuyo sobre el proceso, ni introducciones tipo
   "aquí tienes tu autobiografía" — empieza directamente con el primer capítulo.
 """
