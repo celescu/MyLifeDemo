@@ -73,7 +73,11 @@ def _clave_hex() -> str:
     return DB_ENCRYPTION_KEY.encode("utf-8").hex()
 
 
-client = anthropic.Anthropic()  # usa la variable de entorno ANTHROPIC_API_KEY
+# Usa la variable de entorno ANTHROPIC_API_KEY automáticamente.
+client = anthropic.Anthropic(
+    timeout=60.0,   # por defecto; se amplía por llamada donde hace falta más margen
+    max_retries=1,  # menos reintentos automáticos silenciosos: si falla, falla rápido y claro
+)
 
 limiter = Limiter(key_func=get_remote_address)
 
@@ -679,12 +683,15 @@ def enviar_mensaje(payload: MensajeIn, usuario: str = Depends(obtener_usuario_ac
 
     mensajes.append({"role": "user", "content": payload.mensaje})
 
+    _inicio = time.perf_counter()
     respuesta = client.messages.create(
         model=MODEL,
         max_tokens=500,
         system=SYSTEM_PROMPT_ENTREVISTA,
         messages=mensajes,
+        timeout=45.0,  # una respuesta de entrevista debe ser rápida; si tarda más, algo va mal
     )
+    print(f"[tiempos] enviar_mensaje ({usuario}, sesión {sesion_id}): {time.perf_counter() - _inicio:.1f}s")
     texto = respuesta.content[0].text
     mensajes.append({"role": "assistant", "content": texto})
     guardar_mensajes(sesion_id, mensajes)
@@ -725,23 +732,30 @@ def cerrar_sesion(payload: CerrarSesionIn, usuario: str = Depends(obtener_usuari
     if not turnos_reales:
         return {"error": "esta sesión no tiene ninguna respuesta todavía, no hay nada que resumir"}
 
-    respuesta = client.messages.create(
-        model=MODEL,
-        max_tokens=4000,
-        system=SYSTEM_PROMPT_RESUMEN,
-        tools=[HERRAMIENTA_RESUMEN],
-        tool_choice={"type": "tool", "name": "guardar_resumen_memoria"},
-        messages=[{
-            "role": "user",
-            "content": (
-                f"Año actual real: {datetime.utcnow().year}\n"
-                f"Año de nacimiento ya conocido (null si aún no se sabe): "
-                f"{json.dumps(resumen_previo.get('anio_nacimiento'))}\n\n"
-                f"Resumen previo:\n{json.dumps(resumen_previo, ensure_ascii=False)}\n\n"
-                f"Transcripción de la nueva sesión:\n{transcripcion}"
-            ),
-        }],
-    )
+    _inicio = time.perf_counter()
+    try:
+        respuesta = client.messages.create(
+            model=MODEL,
+            max_tokens=4000,
+            system=SYSTEM_PROMPT_RESUMEN,
+            tools=[HERRAMIENTA_RESUMEN],
+            tool_choice={"type": "tool", "name": "guardar_resumen_memoria"},
+            messages=[{
+                "role": "user",
+                "content": (
+                    f"Año actual real: {datetime.utcnow().year}\n"
+                    f"Año de nacimiento ya conocido (null si aún no se sabe): "
+                    f"{json.dumps(resumen_previo.get('anio_nacimiento'))}\n\n"
+                    f"Resumen previo:\n{json.dumps(resumen_previo, ensure_ascii=False)}\n\n"
+                    f"Transcripción de la nueva sesión:\n{transcripcion}"
+                ),
+            }],
+            timeout=100.0,  # el resumen puede tardar más que un mensaje normal, pero no infinito
+        )
+    except anthropic.APITimeoutError:
+        print(f"[tiempos] cerrar_sesion ({usuario}, sesión {payload.sesion_id}): TIMEOUT tras {time.perf_counter() - _inicio:.1f}s")
+        return {"error": "la generación del resumen ha tardado demasiado y se ha cancelado; la conversación sigue guardada íntegra, puedes reintentar cerrar esta sesión más tarde"}
+    print(f"[tiempos] cerrar_sesion ({usuario}, sesión {payload.sesion_id}): {time.perf_counter() - _inicio:.1f}s")
 
     bloque_herramienta = next(
         (b for b in respuesta.content if b.type == "tool_use"), None
@@ -1125,20 +1139,27 @@ def generar_autobiografia(usuario: str = Depends(obtener_usuario_actual)):
     if not resumen.get("cronologia") and not any(resumen.get("bloques", {}).values()):
         return {"error": "todavía no hay suficiente memoria guardada para generar una autobiografía"}
 
-    respuesta = client.messages.create(
-        model=MODEL,
-        max_tokens=8000,
-        system=SYSTEM_PROMPT_AUTOBIOGRAFIA,
-        messages=[{
-            "role": "user",
-            "content": (
-                f"Año de nacimiento (null si no se conoce): {json.dumps(resumen.get('anio_nacimiento'))}\n\n"
-                f"Cronología de eventos (cada uno ya trae su año calculado):\n"
-                f"{json.dumps(resumen.get('cronologia', []), ensure_ascii=False)}\n\n"
-                f"Bloques temáticos con detalle:\n{json.dumps(resumen.get('bloques', {}), ensure_ascii=False)}"
-            ),
-        }],
-    )
+    _inicio = time.perf_counter()
+    try:
+        respuesta = client.messages.create(
+            model=MODEL,
+            max_tokens=8000,
+            system=SYSTEM_PROMPT_AUTOBIOGRAFIA,
+            messages=[{
+                "role": "user",
+                "content": (
+                    f"Año de nacimiento (null si no se conoce): {json.dumps(resumen.get('anio_nacimiento'))}\n\n"
+                    f"Cronología de eventos (cada uno ya trae su año calculado):\n"
+                    f"{json.dumps(resumen.get('cronologia', []), ensure_ascii=False)}\n\n"
+                    f"Bloques temáticos con detalle:\n{json.dumps(resumen.get('bloques', {}), ensure_ascii=False)}"
+                ),
+            }],
+            timeout=150.0,  # texto largo (hasta 8000 tokens), necesita más margen que el resumen
+        )
+    except anthropic.APITimeoutError:
+        print(f"[tiempos] generar_autobiografia ({usuario}): TIMEOUT tras {time.perf_counter() - _inicio:.1f}s")
+        return {"error": "la generación de la autobiografía ha tardado demasiado y se ha cancelado; puedes intentarlo de nuevo"}
+    print(f"[tiempos] generar_autobiografia ({usuario}): {time.perf_counter() - _inicio:.1f}s")
     contenido = respuesta.content[0].text
     fecha = datetime.utcnow().isoformat()
 
