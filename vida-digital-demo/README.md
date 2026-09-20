@@ -35,15 +35,16 @@ congelada sirviendo una versión antigua). Deja que Railway lo detecte solo.
 
 ## Cifrado de la base de datos
 
-Desde esta versión, `memoria.db` se cifra en reposo con SQLCipher usando una
-clave maestra (`DB_ENCRYPTION_KEY`). Esto protege el archivo si alguien
-accediera a él sin pasar por la aplicación (un volumen filtrado, una copia
-de seguridad robada). **No** protege frente al administrador, que conoce la
-clave — para eso está el sistema de exportar/restaurar/borrar por usuario
-que ya tienes.
+`memoria.db` se cifra en reposo con SQLCipher usando una clave maestra
+(`DB_ENCRYPTION_KEY`). Esto protege el archivo si alguien accediera a él
+sin pasar por la aplicación (un volumen filtrado, una copia de seguridad
+robada). **No** protege frente al administrador, que conoce la clave —
+para eso está el sistema de exportar/restaurar/borrar por usuario.
 
 - Si `memoria.db` ya existe y está sin cifrar, la primera vez que arranque
-  esta versión se migra automáticamente a cifrado, sin perder nada.
+  esta versión se migra automáticamente a cifrado, sin perder nada. La
+  migración se hace sobre un archivo temporal y solo se sustituye al final
+  de forma atómica: si algo falla a mitad, la base original queda intacta.
 - Se guarda una copia sin cifrar como `memoria.db.sin_cifrar.backup` durante
   la migración — **bórrala manualmente en cuanto confirmes que todo
   funciona bien**, si no la borras, el propósito del cifrado queda anulado
@@ -52,12 +53,45 @@ que ya tienes.
   no hay forma de recuperarlos sin ella. Guárdala en un sitio seguro,
   separado de donde guardes las copias de `memoria.db`.
 
+## Endurecimiento de seguridad adicional
+
+Esta versión añade, sobre el cifrado:
+
+- **Límite de peticiones (rate limiting)**: como máximo 5 intentos de login
+  por minuto por IP; límites similares en los endpoints de administración.
+  Pasado el límite, el servidor responde con el código HTTP 429.
+- **Cabeceras de seguridad** (protección contra clickjacking, sniffing de
+  tipo de contenido, política de referrer) y una Política de Seguridad de
+  Contenido (CSP) — activas siempre, no solo en producción.
+- **HTTPS forzado, cabecera HSTS, y cookies marcadas como seguras** — solo
+  cuando `ENTORNO=production` (ver la sección de variables de entorno).
+- **Restricción de hosts permitidos** — solo cuando `ENTORNO=production` y
+  `HOSTS_PERMITIDOS` está configurado.
+- **Comparación en tiempo constante en el login**: no revela por el tiempo
+  de respuesta si un nombre de usuario existe o no.
+- **Validación de contraseñas y usuarios nuevos**: mínimo 10 caracteres,
+  rechaza contraseñas obvias, restringe los caracteres del nombre de
+  usuario. No afecta a cuentas ya creadas, solo a las nuevas.
+
+⚠️ **Dos requisitos que, si no cumples, o bien la app no arranca, o bien
+te quedas sin parte de esta protección sin darte cuenta:**
+
+1. Tu `ADMIN_PASSWORD` actual debe tener **al menos 12 caracteres** — si
+   es más corta, la app no arranca. Compruébalo y cámbiala en Railway
+   ANTES de desplegar esta versión.
+2. Debes añadir `ENTORNO=production` y `HOSTS_PERMITIDOS` con tu dominio
+   real en las variables de Railway — si no lo haces, la app funciona
+   igual mismo, pero sin HTTPS forzado, sin HSTS, sin cookies seguras y
+   sin restricción de hosts.
+
 ## Variables de entorno necesarias
 
      ANTHROPIC_API_KEY=sk-ant-...
-     ADMIN_PASSWORD=una-contraseña-solo-tuya-para-crear-cuentas
+     ADMIN_PASSWORD=una-contraseña-solo-tuya-de-al-menos-12-caracteres
      ADMIN_USERNAME=yo
      DB_ENCRYPTION_KEY=una-clave-larga-y-aleatoria
+     ENTORNO=production
+     HOSTS_PERMITIDOS=tu-dominio-de-railway.up.railway.app
 
 Genera `DB_ENCRYPTION_KEY` con este comando y pégala en Railway (Variables):
 
@@ -66,8 +100,21 @@ Genera `DB_ENCRYPTION_KEY` con este comando y pégala en Railway (Variables):
 ADMIN_PASSWORD no es la contraseña de ningún usuario — es una contraseña
 aparte que solo tú conoces, y que se usa únicamente para dar de alta
 cuentas nuevas desde /admin.html y para operaciones de administración.
+**Debe tener al menos 12 caracteres, o la aplicación no arranca.**
 ADMIN_USERNAME debe coincidir con el nombre de usuario que uses tú mismo
 (recomendado: "yo", así se conecta con todos tus datos ya guardados).
+
+`ENTORNO` controla si se activan las protecciones pensadas para producción
+(HTTPS forzado, cookies marcadas como seguras, cabecera HSTS, restricción
+de hosts permitidos). Si lo dejas en `development` o no lo pones, la app
+funciona igual pero SIN esas protecciones — correcto para probar en tu
+propio ordenador, pero debes ponerlo en `production` en Railway.
+
+`HOSTS_PERMITIDOS` solo se aplica cuando `ENTORNO=production`. Pon ahí el
+dominio exacto de tu app en Railway (o tu dominio propio si lo has
+configurado), separados por comas si tienes varios. Si lo dejas vacío en
+producción, esa protección concreta simplemente no se activa — no rompe
+nada, pero te quedas sin ella.
 
 ## Cómo ponerlo en marcha
 
@@ -172,12 +219,24 @@ significar pérdida de datos:
    ordenador, ya que a partir de ahí solo deberías conservar backups ya
    cifrados.
 
+9. **Prueba el límite de peticiones**: intenta iniciar sesión con la
+   contraseña incorrecta varias veces seguidas (5-6 intentos). En algún
+   punto de esa tanda debería aparecer un error distinto (código 429,
+   "demasiadas peticiones") en vez del error normal de credenciales — eso
+   confirma que el límite está activo. El número exacto de intentos antes
+   de bloquear puede variar ligeramente.
+
+10. **Confirma que `ENTORNO=production` está activo de verdad**: abre las
+    herramientas de desarrollador del navegador (F12), pestaña "Network"/
+    "Red", entra en la app, y mira las cabeceras de cualquier respuesta.
+    Debería aparecer `strict-transport-security`. Si no aparece, revisa
+    que pusiste `ENTORNO=production` en las variables de Railway.
+
 ## Siguiente paso natural
 
 - Validar con 2-3 personas de confianza además de ti mismo.
 - Pensar en algún sistema de pago sencillo si la validación va bien
   (sin necesidad todavía de base legal/empresarial formal).
-- Una vez el cifrado esté confirmado y estable, añadir en una tanda aparte
-  las mejoras de menor riesgo que quedaron pendientes: límite de peticiones
-  (rate limiting), cabeceras de seguridad, y validación de contraseñas
-  fuertes al crear cuentas.
+- Reescribir `seguridad.html` con base legal más formal (encargados del
+  tratamiento, plazos de conservación) si el proyecto pasa a tener
+  usuarios de pago reales.

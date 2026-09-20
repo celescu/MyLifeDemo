@@ -1,6 +1,8 @@
 fastapi
-uvicorn
+uvicorn[standard]
 anthropic
 bcrypt
 python-multipart
 sqlcipher3-binary
+python-dotenv
+slowapi
