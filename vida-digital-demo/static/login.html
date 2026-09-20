@@ -110,7 +110,8 @@ document.getElementById('form-login').addEventListener('submit', async (ev) => {
     });
     if (!resp.ok) {
       const data = await resp.json().catch(() => ({}));
-      error.textContent = data.detail || 'Usuario o contraseña incorrectos.';
+      const detalle = Array.isArray(data.detail) ? data.detail.map(e => e.msg).join(' · ') : data.detail;
+      error.textContent = detalle || 'Usuario o contraseña incorrectos.';
       error.style.display = 'block';
       return;
     }

@@ -133,6 +133,17 @@ function mostrar(id, texto, esError) {
   el.textContent = texto;
 }
 
+function formatearDetalle(data) {
+  // Los errores de validación de FastAPI/Pydantic llegan como una lista de
+  // objetos ({msg, loc, ...}), no como un texto simple — hay que extraer el
+  // mensaje de cada uno. Los errores "normales" de la app sí son texto.
+  const detalle = data && data.detail;
+  if (Array.isArray(detalle)) {
+    return detalle.map(err => err.msg || JSON.stringify(err)).join(' · ');
+  }
+  return detalle || 'Error.';
+}
+
 async function crearUsuario() {
   try {
     const resp = await fetch('/api/admin/crear-usuario', {
@@ -145,7 +156,7 @@ async function crearUsuario() {
       }),
     });
     const data = await resp.json();
-    mostrar('resultado-crear', resp.ok ? 'Cuenta creada correctamente.' : (data.detail || 'Error.'), !resp.ok);
+    mostrar('resultado-crear', resp.ok ? 'Cuenta creada correctamente.' : formatearDetalle(data), !resp.ok);
     if (resp.ok) { document.getElementById('nuevo_usuario').value = ''; document.getElementById('nueva_password').value = ''; }
   } catch (e) { mostrar('resultado-crear', 'Problema de conexión.', true); }
 }
@@ -156,7 +167,7 @@ async function listarUsuarios() {
     formData.append('admin_password', passwordAdmin());
     const resp = await fetch('/api/admin/listar-usuarios', { method: 'POST', credentials: 'same-origin', body: formData });
     const data = await resp.json();
-    if (!resp.ok) { mostrar('resultado-listar', data.detail || 'Error.', true); return; }
+    if (!resp.ok) { mostrar('resultado-listar', formatearDetalle(data), true); return; }
     const sel = document.getElementById('selector_usuario');
     sel.innerHTML = data.map(u => `<option value="${u.usuario}">${u.usuario}</option>`).join('');
     mostrar('resultado-listar', `${data.length} usuario(s) cargado(s).`, false);
@@ -172,7 +183,7 @@ async function exportarUsuarioIndividual() {
     formData.append('admin_password', passwordAdmin());
     const resp = await fetch('/api/admin/exportar-usuario', { method: 'POST', credentials: 'same-origin', body: formData });
     const data = await resp.json();
-    if (!resp.ok) { mostrar('resultado-individual', data.detail || 'Error.', true); return; }
+    if (!resp.ok) { mostrar('resultado-individual', formatearDetalle(data), true); return; }
     const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -194,7 +205,7 @@ async function restaurarUsuarioIndividual() {
     formData.append('archivo', archivo);
     const resp = await fetch('/api/admin/restaurar-usuario', { method: 'POST', credentials: 'same-origin', body: formData });
     const data = await resp.json();
-    mostrar('resultado-individual', resp.ok ? data.mensaje : (data.detail || 'Error.'), !resp.ok);
+    mostrar('resultado-individual', resp.ok ? data.mensaje : formatearDetalle(data), !resp.ok);
   } catch (e) { mostrar('resultado-individual', 'Problema de conexión.', true); }
 }
 
@@ -208,7 +219,7 @@ async function borrarUsuarioIndividual() {
     formData.append('admin_password', passwordAdmin());
     const resp = await fetch('/api/admin/borrar-usuario', { method: 'POST', credentials: 'same-origin', body: formData });
     const data = await resp.json();
-    mostrar('resultado-individual', resp.ok ? data.mensaje : (data.detail || 'Error.'), !resp.ok);
+    mostrar('resultado-individual', resp.ok ? data.mensaje : formatearDetalle(data), !resp.ok);
   } catch (e) { mostrar('resultado-individual', 'Problema de conexión.', true); }
 }
 
@@ -222,7 +233,7 @@ async function restaurarTotal() {
     formData.append('admin_password', passwordAdmin());
     const resp = await fetch('/api/admin/restaurar-db', { method: 'POST', credentials: 'same-origin', body: formData });
     const data = await resp.json();
-    mostrar('resultado-total', resp.ok ? (data.mensaje || 'Restaurado.') : (data.detail || 'Error.'), !resp.ok);
+    mostrar('resultado-total', resp.ok ? (data.mensaje || 'Restaurado.') : formatearDetalle(data), !resp.ok);
   } catch (e) { mostrar('resultado-total', 'Problema de conexión.', true); }
 }
 
@@ -236,7 +247,7 @@ async function borrarTodo() {
     formData.append('confirmacion', frase);
     const resp = await fetch('/api/admin/borrar-todo', { method: 'POST', credentials: 'same-origin', body: formData });
     const data = await resp.json();
-    mostrar('resultado-total', resp.ok ? data.mensaje : (data.detail || 'Error.'), !resp.ok);
+    mostrar('resultado-total', resp.ok ? data.mensaje : formatearDetalle(data), !resp.ok);
     if (resp.ok) document.getElementById('frase_confirmacion').value = '';
   } catch (e) { mostrar('resultado-total', 'Problema de conexión.', true); }
 }
@@ -247,7 +258,7 @@ async function comprobarBackupSinCifrar() {
     formData.append('admin_password', passwordAdmin());
     const resp = await fetch('/api/admin/comprobar-backup-sin-cifrar', { method: 'POST', credentials: 'same-origin', body: formData });
     const data = await resp.json();
-    if (!resp.ok) { mostrar('resultado-backup-plano', data.detail || 'Error.', true); return; }
+    if (!resp.ok) { mostrar('resultado-backup-plano', formatearDetalle(data), true); return; }
     mostrar('resultado-backup-plano', data.existe
       ? `Existe (${data.tamano_bytes} bytes). Bórrala cuando confirmes que todo funciona.`
       : 'No existe ninguna copia sin cifrar pendiente.', false);
@@ -261,7 +272,7 @@ async function borrarBackupSinCifrar() {
     formData.append('admin_password', passwordAdmin());
     const resp = await fetch('/api/admin/borrar-backup-sin-cifrar', { method: 'POST', credentials: 'same-origin', body: formData });
     const data = await resp.json();
-    mostrar('resultado-backup-plano', resp.ok ? data.mensaje : (data.detail || 'Error.'), !resp.ok);
+    mostrar('resultado-backup-plano', resp.ok ? data.mensaje : formatearDetalle(data), !resp.ok);
   } catch (e) { mostrar('resultado-backup-plano', 'Problema de conexión.', true); }
 }
 
@@ -277,7 +288,7 @@ async function listarBackupsAutomaticos() {
     formData.append('admin_password', passwordAdmin());
     const resp = await fetch('/api/admin/listar-backups-automaticos', { method: 'POST', credentials: 'same-origin', body: formData });
     const data = await resp.json();
-    if (!resp.ok) { mostrar('resultado-backups-automaticos', data.detail || 'Error.', true); return; }
+    if (!resp.ok) { mostrar('resultado-backups-automaticos', formatearDetalle(data), true); return; }
     const sel = document.getElementById('selector_backup_automatico');
     if (data.length === 0) {
       sel.innerHTML = '<option value="">— Todavía no hay backups automáticos —</option>';
@@ -298,7 +309,7 @@ async function descargarBackupAutomatico() {
     const resp = await fetch('/api/admin/descargar-backup-automatico', { method: 'POST', credentials: 'same-origin', body: formData });
     if (!resp.ok) {
       const data = await resp.json();
-      mostrar('resultado-backups-automaticos', data.detail || 'Error.', true);
+      mostrar('resultado-backups-automaticos', formatearDetalle(data), true);
       return;
     }
     const blob = await resp.blob();

@@ -955,6 +955,14 @@ function mostrarResultadoMisDatos(texto, esError) {
   el.textContent = texto;
 }
 
+function formatearDetalle(data) {
+  const detalle = data && data.detail;
+  if (Array.isArray(detalle)) {
+    return detalle.map(err => err.msg || JSON.stringify(err)).join(' · ');
+  }
+  return detalle || 'Error.';
+}
+
 async function exportarMisDatos() {
   try {
     const resp = await apiFetch('/api/mis-datos/exportar');
@@ -987,7 +995,7 @@ async function restaurarMisDatos() {
     formData.append('password', password);
     const resp = await apiFetch('/api/mis-datos/restaurar', { method: 'POST', body: formData });
     const data = await resp.json();
-    mostrarResultadoMisDatos(resp.ok ? data.mensaje : (data.detail || 'Error al restaurar.'), !resp.ok);
+    mostrarResultadoMisDatos(resp.ok ? data.mensaje : (formatearDetalle(data)), !resp.ok);
     if (resp.ok) document.getElementById('password-restaurar-mios').value = '';
   } catch (e) {
     mostrarResultadoMisDatos('Hubo un problema al restaurar tus datos.', true);
@@ -1007,7 +1015,7 @@ async function borrarMisDatos() {
     formData.append('password', password);
     const resp = await apiFetch('/api/mis-datos/borrar', { method: 'POST', body: formData });
     const data = await resp.json();
-    mostrarResultadoMisDatos(resp.ok ? data.mensaje : (data.detail || 'Error al borrar.'), !resp.ok);
+    mostrarResultadoMisDatos(resp.ok ? data.mensaje : (formatearDetalle(data)), !resp.ok);
     if (resp.ok) document.getElementById('password-borrar-mios').value = '';
   } catch (e) {
     mostrarResultadoMisDatos('Hubo un problema al borrar tus datos.', true);
