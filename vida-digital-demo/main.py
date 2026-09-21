@@ -218,6 +218,8 @@ def init_db_sobre(conn):
         ("fecha_cierre", "TEXT"),
         ("tokens_input", "INTEGER DEFAULT 0"),
         ("tokens_output", "INTEGER DEFAULT 0"),
+        ("titulo", "TEXT"),
+        ("titulo_manual", "INTEGER DEFAULT 0"),
     ]:
         if columna not in columnas_existentes:
             conn.execute(f"ALTER TABLE sesiones ADD COLUMN {columna} {definicion}")
@@ -510,11 +512,12 @@ def restaurar_datos_usuario(usuario: str, datos: dict):
     with db() as conn:
         for s in datos.get("sesiones") or []:
             conn.execute(
-                "INSERT INTO sesiones (usuario, fecha, mensajes, cerrada, fecha_cierre, tokens_input, tokens_output) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO sesiones (usuario, fecha, mensajes, cerrada, fecha_cierre, tokens_input, tokens_output, titulo, titulo_manual) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     usuario, s.get("fecha"), s.get("mensajes"), s.get("cerrada", 0),
                     s.get("fecha_cierre"), s.get("tokens_input", 0), s.get("tokens_output", 0),
+                    s.get("titulo"), s.get("titulo_manual", 0),
                 ),
             )
         m = datos.get("memoria")
@@ -766,13 +769,25 @@ def cerrar_sesion(payload: CerrarSesionIn, usuario: str = Depends(obtener_usuari
         return {"error": "no se pudo generar el resumen esta vez, la conversación sigue guardada íntegra"}
 
     nuevo_resumen = bloque_herramienta.input
+    titulo_sesion = nuevo_resumen.pop("titulo_sesion", None)  # es de esta sesión, no de la biografía acumulada
     validar_coherencia_fechas(nuevo_resumen, usuario)
 
     guardar_resumen(usuario, nuevo_resumen)
     sumar_tokens(payload.sesion_id, respuesta.usage.input_tokens, respuesta.usage.output_tokens)
     marcar_cerrada(payload.sesion_id)
+    if titulo_sesion:
+        aplicar_titulo_generado(payload.sesion_id, titulo_sesion)
 
     return {"resumen": nuevo_resumen}
+
+
+def aplicar_titulo_generado(sesion_id: int, titulo: str):
+    """Solo sobrescribe el título si el usuario no le ha puesto ya uno a mano."""
+    with db() as conn:
+        conn.execute(
+            "UPDATE sesiones SET titulo = ? WHERE id = ? AND titulo_manual = 0",
+            (titulo, sesion_id),
+        )
 
 
 def validar_coherencia_fechas(resumen: dict, usuario: str):
@@ -812,7 +827,7 @@ def calcular_titulo(mensajes: list) -> str:
 def listar_sesiones(usuario: str = Depends(obtener_usuario_actual)):
     with db() as conn:
         filas = conn.execute(
-            "SELECT id, fecha, cerrada, mensajes FROM sesiones WHERE usuario = ? ORDER BY id DESC",
+            "SELECT id, fecha, cerrada, mensajes, titulo, titulo_manual FROM sesiones WHERE usuario = ? ORDER BY id DESC",
             (usuario,),
         ).fetchall()
     resultado = []
@@ -824,9 +839,32 @@ def listar_sesiones(usuario: str = Depends(obtener_usuario_actual)):
             "fecha": f["fecha"],
             "cerrada": bool(f["cerrada"]),
             "num_turnos": num_turnos,
-            "titulo": calcular_titulo(mensajes),
+            "titulo": f["titulo"] or calcular_titulo(mensajes),
+            "titulo_manual": bool(f["titulo_manual"]),
         })
     return resultado
+
+
+class RenombrarSesionIn(BaseModel):
+    titulo: str
+
+
+@app.post("/api/sesion/{sesion_id}/titulo")
+def renombrar_sesion(sesion_id: int, payload: RenombrarSesionIn, usuario: str = Depends(obtener_usuario_actual)):
+    titulo_limpio = payload.titulo.strip()[:80]
+    if not titulo_limpio:
+        raise HTTPException(status_code=400, detail="El título no puede estar vacío")
+    with db() as conn:
+        fila = conn.execute(
+            "SELECT id FROM sesiones WHERE id = ? AND usuario = ?", (sesion_id, usuario)
+        ).fetchone()
+        if not fila:
+            raise HTTPException(status_code=404, detail="Sesión no encontrada")
+        conn.execute(
+            "UPDATE sesiones SET titulo = ?, titulo_manual = 1 WHERE id = ?",
+            (titulo_limpio, sesion_id),
+        )
+    return {"ok": True, "titulo": titulo_limpio}
 
 
 @app.get("/api/sesion/{sesion_id}")
@@ -858,7 +896,7 @@ def contar_palabras_usuario(mensajes: list) -> int:
 def obtener_metricas(usuario: str = Depends(obtener_usuario_actual)):
     with db() as conn:
         filas = conn.execute(
-            "SELECT id, fecha, fecha_cierre, cerrada, mensajes, tokens_input, tokens_output "
+            "SELECT id, fecha, fecha_cierre, cerrada, mensajes, tokens_input, tokens_output, titulo "
             "FROM sesiones WHERE usuario = ? ORDER BY id ASC",
             (usuario,),
         ).fetchall()
@@ -887,7 +925,7 @@ def obtener_metricas(usuario: str = Depends(obtener_usuario_actual)):
 
         sesiones.append({
             "id": f["id"],
-            "titulo": calcular_titulo(mensajes),
+            "titulo": f["titulo"] or calcular_titulo(mensajes),
             "fecha": f["fecha"],
             "cerrada": bool(f["cerrada"]),
             "tokens_input": f["tokens_input"] or 0,
@@ -1301,6 +1339,13 @@ de errores:
   puede ser posterior al año actual que se te ha indicado. Si algo no
   cuadra, revisa el cálculo en vez de dejarlo así.
 
+Además, genera un título breve (entre 3 y 6 palabras) que resuma de qué ha
+tratado principalmente ESTA sesión en concreto (no toda la biografía, solo
+la transcripción nueva que se te da ahora). Debe ser concreto y reconocible
+de un vistazo, por ejemplo "Servicio militar en Cartagena" o "Boda y primer
+piso", no algo genérico como "Recuerdos de la infancia" si se puede ser más
+específico.
+
 Usa la herramienta que tienes disponible para guardar el resultado."""
 
 HERRAMIENTA_RESUMEN = {
@@ -1309,6 +1354,10 @@ HERRAMIENTA_RESUMEN = {
     "input_schema": {
         "type": "object",
         "properties": {
+            "titulo_sesion": {
+                "type": "string",
+                "description": "Título breve (3-6 palabras) que resume de qué ha tratado esta sesión en concreto, no toda la biografía",
+            },
             "anio_nacimiento": {
                 "type": ["integer", "null"],
                 "description": "Año de nacimiento de la persona si ya se conoce (verbatim, tal como lo dijo o se dedujo de una fecha completa), o null si todavía no se sabe.",
@@ -1354,7 +1403,7 @@ HERRAMIENTA_RESUMEN = {
                 "description": "Lista breve de temas apenas tocados o sin tocar todavía",
             },
         },
-        "required": ["anio_nacimiento", "bloques", "cronologia", "temas_pendientes"],
+        "required": ["titulo_sesion", "anio_nacimiento", "bloques", "cronologia", "temas_pendientes"],
     },
 }
 
