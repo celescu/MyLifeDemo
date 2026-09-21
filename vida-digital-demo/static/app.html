@@ -718,6 +718,30 @@ async function verMemoria(ev) {
   }
 }
 
+async function renombrarSesion(id, tituloActual) {
+  const nuevoTitulo = prompt('Nuevo título para esta sesión:', tituloActual);
+  if (nuevoTitulo === null) return;  // canceló el diálogo
+  if (!nuevoTitulo.trim()) {
+    alert('El título no puede estar vacío.');
+    return;
+  }
+  try {
+    const resp = await apiFetch(`/api/sesion/${id}/titulo`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ titulo: nuevoTitulo.trim() }),
+    });
+    if (!resp.ok) {
+      const data = await resp.json();
+      alert(formatearDetalle(data));
+      return;
+    }
+    await refrescarListaSesiones();
+  } catch (e) {
+    alert('Hubo un problema al renombrar la sesión.');
+  }
+}
+
 async function refrescarListaSesiones() {
   const resp = await apiFetch('/api/sesiones');
   const sesiones = await resp.json();
@@ -742,6 +766,17 @@ async function refrescarListaSesiones() {
       `<span class="sesion-subtitulo">#${s.id} — ${fecha} — ${s.num_turnos} turnos — ${s.cerrada ? 'cerrada' : 'abierta'}</span>`;
     texto.onclick = () => verTranscripcion(s.id, s.titulo);
     div.appendChild(texto);
+
+    const btnRenombrar = document.createElement('button');
+    btnRenombrar.textContent = '✏️ Renombrar';
+    btnRenombrar.style.marginLeft = '10px';
+    btnRenombrar.style.fontSize = '0.75rem';
+    btnRenombrar.style.padding = '4px 10px';
+    btnRenombrar.onclick = (e) => {
+      e.stopPropagation();
+      renombrarSesion(s.id, s.titulo);
+    };
+    div.appendChild(btnRenombrar);
 
     if (!s.cerrada) {
       const btnCerrar = document.createElement('button');
