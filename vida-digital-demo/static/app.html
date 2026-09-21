@@ -120,6 +120,13 @@
   }
   #btn-enviar:hover { background: var(--sello-oscuro); }
 
+  #btn-dictado.escuchando {
+    background: var(--sello);
+    color: #f7ede0;
+    border-color: var(--sello-oscuro);
+    animation: parpadeo 1.4s infinite ease-in-out;
+  }
+
   #memoria, #transcripcion {
     white-space: pre-wrap;
     background: var(--papel-oscuro);
@@ -301,6 +308,10 @@
   <div id="reloj-sesion"><span class="punto-vivo"></span><span id="reloj-texto">Sesión en curso: 00:00</span></div>
   <div id="chat"></div>
   <textarea id="input" rows="3" placeholder="Escribe tu respuesta..."></textarea>
+  <div id="fila-dictado" style="display:none; align-items:center; gap:10px; margin-top:6px; margin-bottom:4px;">
+    <button id="btn-dictado" onclick="alternarDictado()" type="button">🎤 Dictar por voz</button>
+    <span id="aviso-dictado-voz" style="font-family: system-ui, sans-serif; font-size: 0.72rem; color: var(--tinta-suave);">El dictado usa el reconocimiento de voz de tu navegador; el audio se procesa fuera de esta aplicación.</span>
+  </div>
   <div class="acciones">
     <button id="btn-enviar" onclick="enviar()">Enviar</button>
     <button onclick="cerrarSesion(event)">Cerrar sesión de hoy</button>
@@ -446,7 +457,111 @@ function detenerReloj() {
   document.getElementById('reloj-sesion').style.display = 'none';
 }
 
+// --- Dictado por voz ---
+
+let reconocimientoVoz = null;
+let dictadoActivo = false;
+let dictadoDetenidoManualmente = false;
+let textoBaseAntesDeDictar = '';
+
+function inicializarDictado() {
+  const ClaseReconocimiento = window.SpeechRecognition || window.webkitSpeechRecognition;
+  const filaDictado = document.getElementById('fila-dictado');
+
+  if (!ClaseReconocimiento) {
+    // Navegador sin soporte (ej. Firefox, Safari en algunas versiones):
+    // el botón simplemente no se muestra, el resto de la app sigue igual.
+    filaDictado.style.display = 'none';
+    return;
+  }
+
+  filaDictado.style.display = 'flex';
+
+  reconocimientoVoz = new ClaseReconocimiento();
+  reconocimientoVoz.lang = 'es-ES';
+  reconocimientoVoz.continuous = true;
+  reconocimientoVoz.interimResults = true;
+
+  reconocimientoVoz.onresult = (evento) => {
+    let textoFinal = '';
+    let textoInterino = '';
+    for (let i = 0; i < evento.results.length; i++) {
+      const fragmento = evento.results[i][0].transcript;
+      if (evento.results[i].isFinal) {
+        textoFinal += fragmento;
+      } else {
+        textoInterino += fragmento;
+      }
+    }
+    const input = document.getElementById('input');
+    const separador = textoBaseAntesDeDictar && !textoBaseAntesDeDictar.endsWith(' ') ? ' ' : '';
+    input.value = textoBaseAntesDeDictar + separador + textoFinal + textoInterino;
+  };
+
+  reconocimientoVoz.onerror = (evento) => {
+    if (evento.error === 'not-allowed' || evento.error === 'service-not-allowed') {
+      alert('No se ha podido acceder al micrófono. Revisa los permisos del navegador para esta página.');
+      dictadoDetenidoManualmente = true;
+    }
+    // otros errores (ej. "no-speech") se ignoran: el propio onend reintenta si procede
+  };
+
+  reconocimientoVoz.onend = () => {
+    // El reconocimiento del navegador se corta solo tras un silencio, aunque
+    // esté en modo "continuous". Si el usuario no lo ha detenido a propósito,
+    // lo reiniciamos para que el dictado se sienta continuo de verdad.
+    if (dictadoActivo && !dictadoDetenidoManualmente) {
+      try {
+        reconocimientoVoz.start();
+      } catch (e) {
+        // si falla el reinicio, simplemente dejamos el dictado detenido
+        detenerDictadoVisualmente();
+      }
+    } else {
+      detenerDictadoVisualmente();
+    }
+  };
+}
+
+function detenerDictadoVisualmente() {
+  dictadoActivo = false;
+  const btn = document.getElementById('btn-dictado');
+  btn.classList.remove('escuchando');
+  btn.textContent = '🎤 Dictar por voz';
+}
+
+function alternarDictado() {
+  if (!reconocimientoVoz) return;
+
+  if (dictadoActivo) {
+    dictadoDetenidoManualmente = true;
+    reconocimientoVoz.stop();
+    detenerDictadoVisualmente();
+    return;
+  }
+
+  textoBaseAntesDeDictar = document.getElementById('input').value;
+  dictadoDetenidoManualmente = false;
+  dictadoActivo = true;
+  const btn = document.getElementById('btn-dictado');
+  btn.classList.add('escuchando');
+  btn.textContent = '🎤 Escuchando… (toca para detener)';
+  try {
+    reconocimientoVoz.start();
+  } catch (e) {
+    detenerDictadoVisualmente();
+  }
+}
+
+inicializarDictado();
+
 async function enviar() {
+  if (dictadoActivo) {
+    dictadoDetenidoManualmente = true;
+    reconocimientoVoz.stop();
+    detenerDictadoVisualmente();
+  }
+
   const input = document.getElementById('input');
   const texto = input.value.trim();
   if (!texto) return;
