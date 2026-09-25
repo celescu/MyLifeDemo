@@ -75,6 +75,25 @@
 
   .acciones { margin-top: 10px; display: flex; flex-wrap: wrap; gap: 8px; }
 
+  .menu-desplegable { position: relative; display: inline-block; }
+  .lista-menu {
+    display: none;
+    position: absolute;
+    top: calc(100% + 6px);
+    left: 0;
+    z-index: 20;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 230px;
+    padding: 8px;
+    background: var(--papel);
+    border: 1px solid var(--linea);
+    border-radius: 4px;
+    box-shadow: 0 4px 14px rgba(90, 70, 40, 0.18);
+  }
+  .lista-menu.abierta { display: flex; }
+  .lista-menu button { width: 100%; text-align: left; padding: 11px 14px; }
+
   button {
     font-family: system-ui, sans-serif;
     font-size: 0.85rem;
@@ -314,14 +333,19 @@
   </div>
   <div class="acciones">
     <button id="btn-enviar" onclick="enviar()">Enviar</button>
-    <button onclick="cerrarSesion(event)">Cerrar sesión de hoy</button>
-    <button onclick="verMemoria(event)">Ver memoria acumulada</button>
-    <button onclick="verSesiones(event)">Ver sesiones guardadas</button>
-    <button onclick="abrirCuestionario()">Cuestionario de autopercepción</button>
-    <button onclick="abrirMetricas()">Métricas de uso</button>
-    <button onclick="abrirAutobiografia()">Mi autobiografía</button>
-    <button onclick="abrirMisDatos()">Mis datos</button>
-    <button onclick="salir()" style="margin-left:auto;">Salir</button>
+    <div class="menu-desplegable">
+      <button id="btn-menu" onclick="alternarMenu(event)">☰ Menú</button>
+      <div id="lista-menu" class="lista-menu">
+        <button onclick="cerrarSesion(event); cerrarMenu();">Cerrar sesión de hoy</button>
+        <button onclick="verMemoria(event); cerrarMenu();">Ver memoria acumulada</button>
+        <button onclick="verSesiones(event); cerrarMenu();">Ver sesiones guardadas</button>
+        <button onclick="abrirCuestionario(); cerrarMenu();">Cuestionario de autopercepción</button>
+        <button onclick="abrirMetricas(); cerrarMenu();">Métricas de uso</button>
+        <button onclick="abrirAutobiografia(); cerrarMenu();">Mi autobiografía</button>
+        <button onclick="abrirMisDatos(); cerrarMenu();">Mis datos</button>
+        <button onclick="salir()">Salir</button>
+      </div>
+    </div>
   </div>
   <pre id="memoria"></pre>
   <div id="lista-sesiones"></div>
@@ -409,6 +433,23 @@ async function apiFetch(url, opts = {}) {
   }
   return resp;
 }
+
+function alternarMenu(event) {
+  event.stopPropagation();
+  document.getElementById('lista-menu').classList.toggle('abierta');
+}
+
+function cerrarMenu() {
+  document.getElementById('lista-menu').classList.remove('abierta');
+}
+
+document.addEventListener('click', (event) => {
+  const menu = document.getElementById('lista-menu');
+  const boton = document.getElementById('btn-menu');
+  if (menu.classList.contains('abierta') && !menu.contains(event.target) && event.target !== boton) {
+    cerrarMenu();
+  }
+});
 
 async function salir() {
   await apiFetch('/api/logout', { method: 'POST' }).catch(() => {});
@@ -842,8 +883,42 @@ async function verTranscripcion(id, titulo) {
   });
 }
 
-// Mensaje inicial para arrancar la conversación
-añadirMensaje('ia', 'Escribe algo (ej. "hola") para que empiece la entrevista.');
+// Mensaje inicial para arrancar la conversación: variable según el historial del usuario
+async function mostrarBienvenida() {
+  const MENSAJE_GENERICO = 'Escribe algo (ej. "hola") para que empiece la entrevista.';
+  try {
+    const resp = await apiFetch('/api/bienvenida');
+    const datos = await resp.json();
+
+    if (!datos.tiene_sesiones_previas) {
+      añadirMensaje('ia', MENSAJE_GENERICO);
+      return;
+    }
+
+    let opciones = [];
+    if (datos.temas_pendientes && datos.temas_pendientes.length > 0) {
+      const tema = datos.temas_pendientes[0];
+      opciones = [
+        `Habías dejado pendiente hablar de "${tema}". ¿Seguimos por ahí, o prefieres contarme otra cosa hoy?`,
+        `La última vez quedó abierto el tema de "${tema}". ¿Te apetece retomarlo, o empezamos con algo distinto?`,
+      ];
+    } else if (datos.ultimo_titulo) {
+      opciones = [
+        `La última vez hablamos de "${datos.ultimo_titulo}". ¿Seguimos con eso o prefieres contarme algo nuevo hoy?`,
+        `En la sesión anterior estuvimos con "${datos.ultimo_titulo}". ¿Quieres ampliarlo, o te apetece hablar de otra cosa?`,
+      ];
+    } else {
+      opciones = ['Me alegra que hayas vuelto. ¿De qué te apetece hablar hoy?'];
+    }
+
+    const mensaje = opciones[Math.floor(Math.random() * opciones.length)];
+    añadirMensaje('ia', mensaje);
+  } catch (e) {
+    // Si algo falla al pedir la bienvenida, no bloqueamos el arranque de la app
+    añadirMensaje('ia', MENSAJE_GENERICO);
+  }
+}
+mostrarBienvenida();
 
 // --- Cuestionario de autopercepción ---
 

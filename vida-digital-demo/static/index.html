@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Mi vida — un archivo de recuerdos</title>
+<title>Memoricorde — un archivo de recuerdos</title>
 <style>
   :root {
     --papel: #f2e9d8;
@@ -112,6 +112,35 @@
     line-height: 1.6;
   }
 
+  .marca {
+    text-align: center;
+    font-family: system-ui, sans-serif;
+    font-size: 0.8rem;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--sello);
+    margin-bottom: 14px;
+  }
+
+  .significado-nombre {
+    max-width: 560px;
+    margin: 0 auto 48px;
+    text-align: center;
+  }
+  .significado-nombre .nombre {
+    font-family: 'Iowan Old Style', 'Palatino Linotype', Palatino, Georgia, serif;
+    font-style: italic;
+    font-size: 1.5rem;
+    color: var(--sello-oscuro);
+    margin-bottom: 10px;
+  }
+  .significado-nombre p {
+    font-size: 0.98rem;
+    line-height: 1.7;
+    color: var(--tinta-suave);
+    margin: 0;
+  }
+
   .pie {
     text-align: center;
     margin-top: 56px;
@@ -126,6 +155,7 @@
 <div class="envoltura">
 
   <div class="hero">
+    <div class="marca">Memoricorde</div>
     <h1>No podemos conservar una conciencia.<br>Pero sí podemos conservar tu historia.</h1>
     <p class="subtitulo">
       Una entrevistadora paciente te acompaña, sesión a sesión, a poner en
@@ -133,6 +163,17 @@
       formulario que rellenar de una sentada.
     </p>
     <a href="/login.html" class="boton-principal">Empezar mi historia</a>
+  </div>
+
+  <div class="significado-nombre">
+    <div class="nombre">Memoricorde</div>
+    <p>
+      El nombre nace de la memoria y de la cuerda que la sostiene: el hilo
+      que une un recuerdo con el siguiente hasta formar, sesión a sesión,
+      el relato completo de una vida. No son recuerdos sueltos, sino un
+      mismo hilo tendido en el tiempo — y ese hilo es exactamente lo que
+      esta aplicación te ayuda a tejer y conservar.
+    </p>
   </div>
 
   <h2 class="seccion">Por qué podría interesarte</h2>
