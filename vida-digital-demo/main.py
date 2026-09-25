@@ -1153,6 +1153,30 @@ def descargar_backup_automatico(request: Request, admin_password: str = Form(...
     return FileResponse(ruta, filename=nombre, media_type="application/octet-stream")
 
 
+@app.get("/api/bienvenida")
+def obtener_bienvenida(usuario: str = Depends(obtener_usuario_actual)):
+    with db() as conn:
+        fila = conn.execute(
+            "SELECT titulo, titulo_manual, mensajes FROM sesiones "
+            "WHERE usuario = ? AND cerrada = 1 ORDER BY id DESC LIMIT 1",
+            (usuario,),
+        ).fetchone()
+
+    ultimo_titulo = None
+    if fila:
+        mensajes = json.loads(fila["mensajes"])
+        ultimo_titulo = fila["titulo"] or calcular_titulo(mensajes)
+
+    resumen = cargar_resumen(usuario)
+    temas_pendientes = [t for t in resumen.get("temas_pendientes", []) if t][:3]
+
+    return {
+        "tiene_sesiones_previas": fila is not None,
+        "ultimo_titulo": ultimo_titulo,
+        "temas_pendientes": temas_pendientes,
+    }
+
+
 @app.get("/api/memoria")
 def ver_memoria(usuario: str = Depends(obtener_usuario_actual)):
     return cargar_resumen(usuario)
@@ -1254,6 +1278,16 @@ Fechas y edades:
 - Si tienes dudas sobre en qué año ocurrió algo, es mejor preguntarlo
   directamente ("¿en qué año fue eso, más o menos?") que arriesgarte a
   calcularlo mal y decirlo como si fuera un hecho.
+- Cuando la persona cuente un acontecimiento concreto (algo que pasó una
+  vez, no una etapa difusa) sin dar ninguna pista temporal —ni año, ni edad,
+  ni una referencia relativa como "cuando estudiaba" o "de recién casados"
+  que ya puedas situar por el contexto—, pregunta de forma natural, antes de
+  cambiar de tema, el año o la edad aproximada en que ocurrió ("¿más o
+  menos en qué año fue eso?" o "¿qué edad tenías entonces?"). Hazlo una
+  sola vez por acontecimiento: si la persona no lo recuerda con precisión,
+  acepta una aproximación ("por los años 80", "de adolescente") o incluso
+  que no lo sepa, y sigue adelante sin insistir más en ese punto ni
+  convertirlo en un interrogatorio.
 
 Reglas:
 - Haz UNA pregunta a la vez, nunca varias juntas.
