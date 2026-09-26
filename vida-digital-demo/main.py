@@ -43,10 +43,19 @@ import anthropic
 # ---------------------------------------------------------------------------
 
 DB_PATH = os.environ.get("DB_PATH", os.path.join(os.path.dirname(__file__), "memoria.db"))
-MODEL = "claude-sonnet-4-6"
+MODEL = "claude-sonnet-5"  # mismo nivel de calidad que claude-sonnet-4-6, más barato
 
+# Precios oficiales actuales de claude-sonnet-5 por millón de tokens.
+# Si cambias MODEL, revisa y actualiza también estos dos valores.
 PRECIO_INPUT_POR_MILLON = 2.0
 PRECIO_OUTPUT_POR_MILLON = 10.0
+
+# Límites de uso por usuario, para que nadie dispare el coste de la cuenta
+# de Anthropic sin querer (o queriendo). Configurables por variable de
+# entorno sin tocar código.
+LIMITE_MENSAJES_DIARIOS = int(os.environ.get("LIMITE_MENSAJES_DIARIOS", "60"))
+LIMITE_COSTE_DIARIO_USD = float(os.environ.get("LIMITE_COSTE_DIARIO_USD", "1.0"))
+LIMITE_TURNOS_POR_SESION = int(os.environ.get("LIMITE_TURNOS_POR_SESION", "50"))
 
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD")
 ADMIN_USERNAME = os.environ.get("ADMIN_USERNAME", "yo")
@@ -126,6 +135,13 @@ async def cabeceras_seguridad(request: Request, call_next):
 
     if ENTORNO == "production":
         response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+
+    # Evita que el navegador se quede con una versión vieja cacheada de las
+    # páginas tras cada despliegue: "no-cache" no significa "no guardar nada",
+    # significa "guarda esto pero comprueba siempre con el servidor si hay
+    # una versión nueva antes de usarlo".
+    if "text/html" in response.headers.get("content-type", ""):
+        response.headers["Cache-Control"] = "no-cache"
 
     # CSP: permite scripts/estilos inline que usa la propia app, SVG inline
     # del gráfico de métricas (no requiere img-src porque va en el DOM).
@@ -213,6 +229,16 @@ def init_db_sobre(conn):
             tokens_output INTEGER DEFAULT 0
         )
     """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS uso_diario (
+            usuario TEXT NOT NULL,
+            fecha TEXT NOT NULL,
+            mensajes INTEGER DEFAULT 0,
+            tokens_input INTEGER DEFAULT 0,
+            tokens_output INTEGER DEFAULT 0,
+            PRIMARY KEY (usuario, fecha)
+        )
+    """)
     columnas_existentes = {fila[1] for fila in conn.execute("PRAGMA table_info(sesiones)").fetchall()}
     for columna, definicion in [
         ("fecha_cierre", "TEXT"),
@@ -220,6 +246,9 @@ def init_db_sobre(conn):
         ("tokens_output", "INTEGER DEFAULT 0"),
         ("titulo", "TEXT"),
         ("titulo_manual", "INTEGER DEFAULT 0"),
+        ("tipo", "TEXT DEFAULT 'propia'"),
+        ("aportante_nombre", "TEXT"),
+        ("aportante_relacion", "TEXT"),
     ]:
         if columna not in columnas_existentes:
             conn.execute(f"ALTER TABLE sesiones ADD COLUMN {columna} {definicion}")
@@ -364,6 +393,11 @@ class CerrarSesionIn(BaseModel):
     sesion_id: int
 
 
+class NuevaAportacionIn(BaseModel):
+    nombre_aportante: str = Field(..., min_length=1, max_length=80)
+    relacion: str = Field(..., min_length=1, max_length=60)
+
+
 class AutopercepcionIn(BaseModel):
     respuestas: dict
 
@@ -444,10 +478,15 @@ def obtener_o_crear_sesion(usuario: str, sesion_id: int | None) -> tuple[int, li
     with db() as conn:
         if sesion_id is not None:
             row = conn.execute(
-                "SELECT id, mensajes, fecha FROM sesiones WHERE id = ? AND usuario = ?",
+                "SELECT id, mensajes, fecha, tipo FROM sesiones WHERE id = ? AND usuario = ?",
                 (sesion_id, usuario),
             ).fetchone()
             if row:
+                if row["tipo"] == "externa":
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Esta es una sesión de aportación externa; ciérrala desde 'Ver aportaciones' en vez de continuarla aquí.",
+                    )
                 return row["id"], json.loads(row["mensajes"]), row["fecha"]
         fecha = datetime.utcnow().isoformat()
         cur = conn.execute(
@@ -482,6 +521,53 @@ def marcar_cerrada(sesion_id: int):
         )
 
 
+def calcular_coste(tokens_input: int, tokens_output: int) -> float:
+    return (
+        (tokens_input or 0) / 1_000_000 * PRECIO_INPUT_POR_MILLON
+        + (tokens_output or 0) / 1_000_000 * PRECIO_OUTPUT_POR_MILLON
+    )
+
+
+def registrar_uso_diario(usuario: str, tokens_input: int, tokens_output: int):
+    fecha = datetime.utcnow().date().isoformat()
+    with db() as conn:
+        conn.execute(
+            """
+            INSERT INTO uso_diario (usuario, fecha, mensajes, tokens_input, tokens_output)
+            VALUES (?, ?, 1, ?, ?)
+            ON CONFLICT(usuario, fecha) DO UPDATE SET
+                mensajes = mensajes + 1,
+                tokens_input = tokens_input + excluded.tokens_input,
+                tokens_output = tokens_output + excluded.tokens_output
+            """,
+            (usuario, fecha, tokens_input, tokens_output),
+        )
+
+
+def comprobar_limite_diario(usuario: str):
+    """Bloquea antes de llamar a la API si el usuario ya ha agotado su
+    límite diario de mensajes o de coste estimado, para no gastar ni un
+    token de más una vez alcanzado el tope."""
+    fecha = datetime.utcnow().date().isoformat()
+    with db() as conn:
+        row = conn.execute(
+            "SELECT mensajes, tokens_input, tokens_output FROM uso_diario WHERE usuario = ? AND fecha = ?",
+            (usuario, fecha),
+        ).fetchone()
+    if not row:
+        return
+    if row["mensajes"] >= LIMITE_MENSAJES_DIARIOS:
+        raise HTTPException(
+            status_code=429,
+            detail=f"Has llegado al límite de {LIMITE_MENSAJES_DIARIOS} mensajes de hoy. Puedes continuar mañana.",
+        )
+    if calcular_coste(row["tokens_input"], row["tokens_output"]) >= LIMITE_COSTE_DIARIO_USD:
+        raise HTTPException(
+            status_code=429,
+            detail="Has llegado al límite de uso diario. Puedes continuar mañana.",
+        )
+
+
 def exportar_datos_usuario(usuario: str) -> dict:
     with db() as conn:
         sesiones = conn.execute("SELECT * FROM sesiones WHERE usuario = ?", (usuario,)).fetchall()
@@ -512,12 +598,14 @@ def restaurar_datos_usuario(usuario: str, datos: dict):
     with db() as conn:
         for s in datos.get("sesiones") or []:
             conn.execute(
-                "INSERT INTO sesiones (usuario, fecha, mensajes, cerrada, fecha_cierre, tokens_input, tokens_output, titulo, titulo_manual) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO sesiones (usuario, fecha, mensajes, cerrada, fecha_cierre, tokens_input, "
+                "tokens_output, titulo, titulo_manual, tipo, aportante_nombre, aportante_relacion) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     usuario, s.get("fecha"), s.get("mensajes"), s.get("cerrada", 0),
                     s.get("fecha_cierre"), s.get("tokens_input", 0), s.get("tokens_output", 0),
                     s.get("titulo"), s.get("titulo_manual", 0),
+                    s.get("tipo", "propia"), s.get("aportante_nombre"), s.get("aportante_relacion"),
                 ),
             )
         m = datos.get("memoria")
@@ -659,8 +747,25 @@ def guardar_autopercepcion_endpoint(payload: AutopercepcionIn, usuario: str = De
 
 
 @app.post("/api/mensaje")
-def enviar_mensaje(payload: MensajeIn, usuario: str = Depends(obtener_usuario_actual)):
+@limiter.limit("20/minute")
+def enviar_mensaje(request: Request, payload: MensajeIn, usuario: str = Depends(obtener_usuario_actual)):
+    comprobar_limite_diario(usuario)
     sesion_id, mensajes, fecha_inicio = obtener_o_crear_sesion(usuario, payload.sesion_id)
+
+    turnos_reales = len([m for m in mensajes if m["role"] == "assistant"])
+    if turnos_reales >= LIMITE_TURNOS_POR_SESION:
+        return {
+            "sesion_id": sesion_id,
+            "respuesta": (
+                "Llevamos ya un buen rato en esta sesión. Para que la "
+                "conversación no se alargue demasiado, ¿te parece si la "
+                "cerramos aquí? Puedes hacerlo desde el menú, en \"Cerrar "
+                "sesión de hoy\", y seguimos otro día."
+            ),
+            "fecha_inicio": fecha_inicio,
+            "limite_turnos_alcanzado": True,
+        }
+
     resumen = cargar_resumen(usuario)
 
     if not mensajes:
@@ -699,6 +804,7 @@ def enviar_mensaje(payload: MensajeIn, usuario: str = Depends(obtener_usuario_ac
     mensajes.append({"role": "assistant", "content": texto})
     guardar_mensajes(sesion_id, mensajes)
     sumar_tokens(sesion_id, respuesta.usage.input_tokens, respuesta.usage.output_tokens)
+    registrar_uso_diario(usuario, respuesta.usage.input_tokens, respuesta.usage.output_tokens)
 
     if texto.startswith(MARCADOR_CIERRE_USO_INDEBIDO):
         texto_visible = texto[len(MARCADOR_CIERRE_USO_INDEBIDO):].strip()
@@ -718,11 +824,13 @@ def enviar_mensaje(payload: MensajeIn, usuario: str = Depends(obtener_usuario_ac
 def cerrar_sesion(payload: CerrarSesionIn, usuario: str = Depends(obtener_usuario_actual)):
     with db() as conn:
         row = conn.execute(
-            "SELECT mensajes FROM sesiones WHERE id = ? AND usuario = ?",
+            "SELECT mensajes, tipo FROM sesiones WHERE id = ? AND usuario = ?",
             (payload.sesion_id, usuario),
         ).fetchone()
     if not row:
         return {"error": "sesión no encontrada"}
+    if row["tipo"] == "externa":
+        return {"error": "esta es una sesión de aportación externa; ciérrala desde 'Ver aportaciones'"}
 
     mensajes = json.loads(row["mensajes"])
     resumen_previo = cargar_resumen(usuario)
@@ -774,6 +882,7 @@ def cerrar_sesion(payload: CerrarSesionIn, usuario: str = Depends(obtener_usuari
 
     guardar_resumen(usuario, nuevo_resumen)
     sumar_tokens(payload.sesion_id, respuesta.usage.input_tokens, respuesta.usage.output_tokens)
+    registrar_uso_diario(usuario, respuesta.usage.input_tokens, respuesta.usage.output_tokens)
     marcar_cerrada(payload.sesion_id)
     if titulo_sesion:
         aplicar_titulo_generado(payload.sesion_id, titulo_sesion)
@@ -788,6 +897,142 @@ def aplicar_titulo_generado(sesion_id: int, titulo: str):
             "UPDATE sesiones SET titulo = ? WHERE id = ? AND titulo_manual = 0",
             (titulo, sesion_id),
         )
+
+
+# ---------------------------------------------------------------------------
+# Aportaciones externas: un familiar/allegado cuenta lo que recuerda de la
+# persona protagonista, desde el mismo dispositivo. Se guardan como un tipo
+# de sesión aparte ("externa"), nunca se mezclan con la memoria biográfica
+# propia (bloques, anio_nacimiento, cronología) ni con el listado normal de
+# sesiones/métricas de esa memoria.
+# ---------------------------------------------------------------------------
+
+@app.post("/api/aportacion/nueva")
+def nueva_aportacion(payload: NuevaAportacionIn, usuario: str = Depends(obtener_usuario_actual)):
+    fecha = datetime.utcnow().isoformat()
+    with db() as conn:
+        cur = conn.execute(
+            "INSERT INTO sesiones (usuario, fecha, mensajes, tipo, aportante_nombre, aportante_relacion) "
+            "VALUES (?, ?, ?, 'externa', ?, ?)",
+            (usuario, fecha, json.dumps([]), payload.nombre_aportante.strip(), payload.relacion.strip()),
+        )
+        sesion_id = cur.lastrowid
+    return {"sesion_id": sesion_id, "fecha_inicio": fecha}
+
+
+@app.post("/api/aportacion/mensaje")
+@limiter.limit("20/minute")
+def enviar_mensaje_aportacion(request: Request, payload: MensajeIn, usuario: str = Depends(obtener_usuario_actual)):
+    comprobar_limite_diario(usuario)
+
+    if payload.sesion_id is None:
+        raise HTTPException(status_code=400, detail="Falta sesion_id de la aportación")
+
+    with db() as conn:
+        row = conn.execute(
+            "SELECT id, mensajes, fecha, aportante_nombre, aportante_relacion FROM sesiones "
+            "WHERE id = ? AND usuario = ? AND tipo = 'externa'",
+            (payload.sesion_id, usuario),
+        ).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Sesión de aportación no encontrada")
+
+    sesion_id = row["id"]
+    fecha_inicio = row["fecha"]
+    mensajes = json.loads(row["mensajes"])
+
+    turnos_reales = len([m for m in mensajes if m["role"] == "assistant"])
+    if turnos_reales >= LIMITE_TURNOS_POR_SESION:
+        return {
+            "sesion_id": sesion_id,
+            "respuesta": "Ya llevamos un buen rato charlando. ¿Lo dejamos aquí? Puedes cerrar esta aportación cuando quieras.",
+            "fecha_inicio": fecha_inicio,
+            "limite_turnos_alcanzado": True,
+        }
+
+    if not mensajes:
+        contexto = (
+            f"{MARCADOR_CONTEXTO_APORTACION}: {usuario}\n"
+            f"Nombre de quien vas a entrevistar ahora: {row['aportante_nombre']}\n"
+            f"Relación de esa persona con {usuario}: {row['aportante_relacion']}\n\n"
+            f"Empieza la conversación saludando por su nombre y explicando brevemente para qué es esta charla."
+        )
+        mensajes.append({"role": "user", "content": contexto})
+
+    mensajes.append({"role": "user", "content": payload.mensaje})
+
+    _inicio = time.perf_counter()
+    respuesta = client.messages.create(
+        model=MODEL,
+        max_tokens=500,
+        system=SYSTEM_PROMPT_APORTACION,
+        messages=mensajes,
+        timeout=45.0,
+    )
+    print(f"[tiempos] aportacion_mensaje ({usuario}, sesión {sesion_id}): {time.perf_counter() - _inicio:.1f}s")
+    texto = respuesta.content[0].text
+    mensajes.append({"role": "assistant", "content": texto})
+    guardar_mensajes(sesion_id, mensajes)
+    sumar_tokens(sesion_id, respuesta.usage.input_tokens, respuesta.usage.output_tokens)
+    registrar_uso_diario(usuario, respuesta.usage.input_tokens, respuesta.usage.output_tokens)
+
+    return {"sesion_id": sesion_id, "respuesta": texto, "fecha_inicio": fecha_inicio}
+
+
+@app.post("/api/aportacion/{sesion_id}/cerrar")
+def cerrar_aportacion(sesion_id: int, usuario: str = Depends(obtener_usuario_actual)):
+    with db() as conn:
+        row = conn.execute(
+            "SELECT mensajes FROM sesiones WHERE id = ? AND usuario = ? AND tipo = 'externa'",
+            (sesion_id, usuario),
+        ).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Sesión de aportación no encontrada")
+
+    mensajes = json.loads(row["mensajes"])
+    marcar_cerrada(sesion_id)
+    aplicar_titulo_generado(sesion_id, calcular_titulo(mensajes))
+    return {"ok": True}
+
+
+@app.get("/api/aportaciones")
+def listar_aportaciones(usuario: str = Depends(obtener_usuario_actual)):
+    with db() as conn:
+        filas = conn.execute(
+            "SELECT id, fecha, cerrada, mensajes, titulo, aportante_nombre, aportante_relacion "
+            "FROM sesiones WHERE usuario = ? AND tipo = 'externa' ORDER BY id DESC",
+            (usuario,),
+        ).fetchall()
+    resultado = []
+    for f in filas:
+        mensajes = json.loads(f["mensajes"])
+        resultado.append({
+            "id": f["id"],
+            "fecha": f["fecha"],
+            "cerrada": bool(f["cerrada"]),
+            "num_turnos": len([m for m in mensajes if m["role"] == "assistant"]),
+            "titulo": f["titulo"] or calcular_titulo(mensajes),
+            "aportante_nombre": f["aportante_nombre"],
+            "aportante_relacion": f["aportante_relacion"],
+        })
+    return resultado
+
+
+@app.get("/api/aportacion/{sesion_id}")
+def ver_aportacion(sesion_id: int, usuario: str = Depends(obtener_usuario_actual)):
+    with db() as conn:
+        row = conn.execute(
+            "SELECT mensajes FROM sesiones WHERE id = ? AND usuario = ? AND tipo = 'externa'",
+            (sesion_id, usuario),
+        ).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Sesión de aportación no encontrada")
+    mensajes = json.loads(row["mensajes"])
+    mensajes_visibles = [
+        m for m in mensajes
+        if not (m["role"] == "user" and m["content"].startswith(MARCADOR_CONTEXTO_APORTACION))
+    ]
+    return mensajes_visibles
 
 
 def validar_coherencia_fechas(resumen: dict, usuario: str):
@@ -812,12 +1057,14 @@ def validar_coherencia_fechas(resumen: dict, usuario: str):
 
 
 MARCADOR_CONTEXTO_INTERNO = "Resumen de memoria acumulado hasta ahora"
+MARCADOR_CONTEXTO_APORTACION = "Persona protagonista de este proyecto"
 MARCADOR_CIERRE_USO_INDEBIDO = "[CIERRE_POR_USO_INDEBIDO]"
 
 
 def calcular_titulo(mensajes: list) -> str:
     for m in mensajes:
-        if m["role"] == "user" and not m["content"].startswith(MARCADOR_CONTEXTO_INTERNO):
+        if m["role"] == "user" and not m["content"].startswith(MARCADOR_CONTEXTO_INTERNO) \
+                and not m["content"].startswith(MARCADOR_CONTEXTO_APORTACION):
             texto = m["content"].strip()
             return texto[:60] + ("…" if len(texto) > 60 else "")
     return "(sesión sin mensajes todavía)"
@@ -827,7 +1074,8 @@ def calcular_titulo(mensajes: list) -> str:
 def listar_sesiones(usuario: str = Depends(obtener_usuario_actual)):
     with db() as conn:
         filas = conn.execute(
-            "SELECT id, fecha, cerrada, mensajes, titulo, titulo_manual FROM sesiones WHERE usuario = ? ORDER BY id DESC",
+            "SELECT id, fecha, cerrada, mensajes, titulo, titulo_manual FROM sesiones "
+            "WHERE usuario = ? AND (tipo IS NULL OR tipo = 'propia') ORDER BY id DESC",
             (usuario,),
         ).fetchall()
     resultado = []
@@ -871,7 +1119,7 @@ def renombrar_sesion(sesion_id: int, payload: RenombrarSesionIn, usuario: str = 
 def ver_sesion(sesion_id: int, usuario: str = Depends(obtener_usuario_actual)):
     with db() as conn:
         row = conn.execute(
-            "SELECT mensajes FROM sesiones WHERE id = ? AND usuario = ?",
+            "SELECT mensajes FROM sesiones WHERE id = ? AND usuario = ? AND (tipo IS NULL OR tipo = 'propia')",
             (sesion_id, usuario),
         ).fetchone()
     if not row:
@@ -897,7 +1145,7 @@ def obtener_metricas(usuario: str = Depends(obtener_usuario_actual)):
     with db() as conn:
         filas = conn.execute(
             "SELECT id, fecha, fecha_cierre, cerrada, mensajes, tokens_input, tokens_output, titulo "
-            "FROM sesiones WHERE usuario = ? ORDER BY id ASC",
+            "FROM sesiones WHERE usuario = ? AND (tipo IS NULL OR tipo = 'propia') ORDER BY id ASC",
             (usuario,),
         ).fetchall()
 
@@ -918,10 +1166,7 @@ def obtener_metricas(usuario: str = Depends(obtener_usuario_actual)):
             fin = datetime.utcnow()
         duracion_segundos = max(0, int((fin - inicio).total_seconds()))
 
-        coste = (
-            (f["tokens_input"] or 0) / 1_000_000 * PRECIO_INPUT_POR_MILLON
-            + (f["tokens_output"] or 0) / 1_000_000 * PRECIO_OUTPUT_POR_MILLON
-        )
+        coste = calcular_coste(f["tokens_input"], f["tokens_output"])
 
         sesiones.append({
             "id": f["id"],
@@ -940,10 +1185,7 @@ def obtener_metricas(usuario: str = Depends(obtener_usuario_actual)):
         total_palabras += palabras
         total_segundos += duracion_segundos
 
-    total_coste = (
-        total_tokens_input / 1_000_000 * PRECIO_INPUT_POR_MILLON
-        + total_tokens_output / 1_000_000 * PRECIO_OUTPUT_POR_MILLON
-    )
+    total_coste = calcular_coste(total_tokens_input, total_tokens_output)
 
     with db() as conn:
         fila_autobio = conn.execute(
@@ -951,10 +1193,7 @@ def obtener_metricas(usuario: str = Depends(obtener_usuario_actual)):
         ).fetchone()
     tokens_input_autobio = fila_autobio["tokens_input"] if fila_autobio else 0
     tokens_output_autobio = fila_autobio["tokens_output"] if fila_autobio else 0
-    coste_autobio = (
-        tokens_input_autobio / 1_000_000 * PRECIO_INPUT_POR_MILLON
-        + tokens_output_autobio / 1_000_000 * PRECIO_OUTPUT_POR_MILLON
-    )
+    coste_autobio = calcular_coste(tokens_input_autobio, tokens_output_autobio)
 
     return {
         "sesiones": sesiones,
@@ -1343,6 +1582,29 @@ tómalo como una señal de que es un tema que le importa, e invítala activament
 a profundizar en ellos cuando surja la ocasión. Todo esto se queda en la
 conversación (descripción de la foto o el vídeo, lo que significa), nunca le
 pidas que suba ni envíe ningún archivo.
+"""
+
+SYSTEM_PROMPT_APORTACION = """Vas a entrevistar a un familiar o allegado de la persona protagonista
+de este proyecto, para recoger su testimonio y sus recuerdos sobre ella —
+no sobre quien tienes delante ahora mismo.
+
+Al principio de la conversación se te indica el nombre de la persona
+protagonista, el nombre de quien vas a entrevistar y su relación con ella.
+No hace falta que vuelvas a preguntar esos datos: saluda ya sabiendo quién
+es, y explica en una frase para qué es esta charla.
+
+Haz preguntas abiertas y cálidas sobre: cómo describiría a la persona
+protagonista, anécdotas concretas que recuerde, momentos compartidos que
+destacaría, qué virtudes o rasgos de carácter le atribuye, y cualquier
+historia que crea que merece quedar recogida.
+
+Sé breve en tus intervenciones (2-4 frases), con un tono cercano y natural,
+como una charla, no un interrogatorio. No des consejos ni opines sobre lo
+que se cuenta: limítate a escuchar y a preguntar con curiosidad genuina
+cuando algo se cuenta muy por encima.
+
+No pidas datos de contacto ni información sensible de terceros que no
+salga de forma natural en la propia conversación.
 """
 
 SYSTEM_PROMPT_RESUMEN = """Vas a recibir un resumen de memoria previo (puede estar vacío),
