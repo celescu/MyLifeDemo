@@ -1,0 +1,325 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>Administración — Mi vida</title>
+<style>
+  :root {
+    --papel: #f2e9d8; --papel-oscuro: #e8dcc4; --tinta: #3a3128;
+    --tinta-suave: #6b5f4f; --linea: #cdbd9f; --sello: #a8574a; --sello-oscuro: #8c453a;
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: 'Iowan Old Style', Georgia, serif;
+    background: var(--papel); color: var(--tinta);
+    max-width: 520px; margin: 60px auto; padding: 0 20px 60px;
+  }
+  h2 { font-weight: 400; font-style: italic; color: var(--tinta-suave); border-bottom: 1px solid var(--linea); padding-bottom: 14px; margin-top: 40px; }
+  h2:first-of-type { margin-top: 0; }
+  h3 { font-family: system-ui, sans-serif; font-size: 0.9rem; margin-bottom: 6px; }
+  label { display: block; font-family: system-ui, sans-serif; font-size: 0.8rem; color: var(--tinta-suave); margin-bottom: 4px; margin-top: 10px; }
+  input, select {
+    width: 100%; font-family: system-ui, sans-serif; font-size: 0.95rem;
+    background: var(--papel-oscuro); border: 1px solid var(--linea); border-radius: 2px;
+    padding: 9px 12px; color: var(--tinta); margin-bottom: 4px;
+  }
+  button {
+    font-family: system-ui, sans-serif; font-size: 0.85rem; font-weight: 600;
+    padding: 9px 16px; border-radius: 3px; border: 1px solid var(--sello-oscuro);
+    background: var(--sello); color: #f7ede0; cursor: pointer; margin-top: 10px;
+  }
+  button.peligro { background: var(--tinta); border-color: #1a1510; }
+  button:hover { opacity: 0.9; }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+  .caja {
+    background: var(--papel-oscuro); border: 1px solid var(--linea); border-radius: 3px;
+    padding: 16px; margin-bottom: 18px;
+  }
+  .aviso { font-family: system-ui, sans-serif; font-size: 0.78rem; color: var(--tinta-suave); margin-bottom: 8px; }
+  .resultado { font-family: system-ui, sans-serif; font-size: 0.82rem; margin-top: 8px; }
+  #password-admin-global {
+    position: sticky; top: 0; background: var(--papel); padding: 14px 0; z-index: 10;
+  }
+</style>
+</head>
+<body>
+
+  <div id="password-admin-global">
+    <h2 style="margin-top:0;">Administración</h2>
+    <label>Contraseña de administrador (necesaria para todas las acciones de esta página)</label>
+    <input type="password" id="admin_password">
+  </div>
+
+  <h2>Crear cuenta de usuario</h2>
+  <div class="caja">
+    <label>Nombre de usuario para la nueva cuenta</label>
+    <input type="text" id="nuevo_usuario">
+    <label>Contraseña para esa cuenta</label>
+    <input type="password" id="nueva_password">
+    <button onclick="crearUsuario()">Crear cuenta</button>
+    <p class="resultado" id="resultado-crear"></p>
+  </div>
+
+  <h2>Usuarios existentes</h2>
+  <div class="caja">
+    <button onclick="listarUsuarios()">Cargar lista de usuarios</button>
+    <select id="selector_usuario" style="margin-top:10px;"><option value="">— Carga la lista primero —</option></select>
+    <p class="resultado" id="resultado-listar"></p>
+  </div>
+
+  <h2>Backup individual (un usuario)</h2>
+  <div class="caja">
+    <p class="aviso">Usa el usuario seleccionado arriba en "Usuarios existentes".</p>
+    <button onclick="exportarUsuarioIndividual()">Descargar datos de ese usuario</button>
+    <label>Restaurar desde archivo (sustituye SOLO los datos de ese usuario)</label>
+    <input type="file" id="archivo_individual" accept=".json">
+    <button onclick="restaurarUsuarioIndividual()">Restaurar datos de ese usuario</button>
+    <label>Borrar (elimina SOLO los datos de ese usuario, la cuenta sigue existiendo)</label>
+    <button class="peligro" onclick="borrarUsuarioIndividual()">Borrar datos de ese usuario</button>
+    <p class="resultado" id="resultado-individual"></p>
+  </div>
+
+  <h2>Backup total (todos los usuarios)</h2>
+  <div class="caja">
+    <p class="aviso">Esto afecta a TODOS los usuarios a la vez, no solo a uno.</p>
+    <a href="/api/descargar-db" style="display:inline-block; margin-top:6px; font-family: system-ui, sans-serif; font-size: 0.85rem; color: var(--tinta-suave);">Descargar base de datos completa (archivo .db)</a>
+    <label>Restaurar base de datos completa desde archivo .db</label>
+    <input type="file" id="archivo_total" accept=".db">
+    <button onclick="restaurarTotal()">Restaurar TODO</button>
+    <label style="color:var(--sello-oscuro);">Borrar los datos de TODOS los usuarios (no borra las cuentas)</label>
+    <input type="text" id="frase_confirmacion" placeholder='Escribe: BORRAR TODO'>
+    <button class="peligro" onclick="borrarTodo()">Borrar todos los datos</button>
+    <p class="resultado" id="resultado-total"></p>
+  </div>
+
+  <h2>Backups automáticos</h2>
+  <div class="caja">
+    <p class="aviso">
+      Se genera una copia cifrada de la base de datos completa cada 24 horas
+      de forma automática, y se conservan las últimas 7. Esto complementa
+      la descarga manual, no la sustituye — protege de errores de la propia
+      aplicación, pero no de una pérdida completa del volumen de Railway,
+      así que sigue siendo buena idea bajarte una copia de vez en cuando.
+    </p>
+    <button onclick="listarBackupsAutomaticos()">Ver backups disponibles</button>
+    <select id="selector_backup_automatico" style="margin-top:10px;"><option value="">— Carga la lista primero —</option></select>
+    <button onclick="descargarBackupAutomatico()">Descargar el backup seleccionado</button>
+    <p class="resultado" id="resultado-backups-automaticos"></p>
+  </div>
+
+  <h2>Copia residual sin cifrar (migración a SQLCipher)</h2>
+  <div class="caja">
+    <p class="aviso">
+      Al migrar automáticamente a la base de datos cifrada, se guarda una
+      copia temporal SIN cifrar por seguridad. Bórrala en cuanto confirmes
+      que todo funciona bien — mientras exista, anula el propósito del
+      cifrado.
+    </p>
+    <button onclick="comprobarBackupSinCifrar()">Comprobar si existe</button>
+    <button class="peligro" onclick="borrarBackupSinCifrar()">Borrar copia sin cifrar</button>
+    <p class="resultado" id="resultado-backup-plano"></p>
+  </div>
+
+<script>
+function passwordAdmin() {
+  return document.getElementById('admin_password').value;
+}
+function usuarioSeleccionado() {
+  return document.getElementById('selector_usuario').value;
+}
+function mostrar(id, texto, esError) {
+  const el = document.getElementById(id);
+  el.style.color = esError ? '#8c453a' : 'var(--tinta)';
+  el.textContent = texto;
+}
+
+function formatearDetalle(data) {
+  // Los errores de validación de FastAPI/Pydantic llegan como una lista de
+  // objetos ({msg, loc, ...}), no como un texto simple — hay que extraer el
+  // mensaje de cada uno. Los errores "normales" de la app sí son texto.
+  const detalle = data && data.detail;
+  if (Array.isArray(detalle)) {
+    return detalle.map(err => err.msg || JSON.stringify(err)).join(' · ');
+  }
+  return detalle || 'Error.';
+}
+
+async function crearUsuario() {
+  try {
+    const resp = await fetch('/api/admin/crear-usuario', {
+      method: 'POST', credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        usuario: document.getElementById('nuevo_usuario').value,
+        password: document.getElementById('nueva_password').value,
+        admin_password: passwordAdmin(),
+      }),
+    });
+    const data = await resp.json();
+    mostrar('resultado-crear', resp.ok ? 'Cuenta creada correctamente.' : formatearDetalle(data), !resp.ok);
+    if (resp.ok) { document.getElementById('nuevo_usuario').value = ''; document.getElementById('nueva_password').value = ''; }
+  } catch (e) { mostrar('resultado-crear', 'Problema de conexión.', true); }
+}
+
+async function listarUsuarios() {
+  try {
+    const formData = new FormData();
+    formData.append('admin_password', passwordAdmin());
+    const resp = await fetch('/api/admin/listar-usuarios', { method: 'POST', credentials: 'same-origin', body: formData });
+    const data = await resp.json();
+    if (!resp.ok) { mostrar('resultado-listar', formatearDetalle(data), true); return; }
+    const sel = document.getElementById('selector_usuario');
+    sel.innerHTML = data.map(u => `<option value="${u.usuario}">${u.usuario}</option>`).join('');
+    mostrar('resultado-listar', `${data.length} usuario(s) cargado(s).`, false);
+  } catch (e) { mostrar('resultado-listar', 'Problema de conexión.', true); }
+}
+
+async function exportarUsuarioIndividual() {
+  const usuario = usuarioSeleccionado();
+  if (!usuario) { mostrar('resultado-individual', 'Carga y selecciona un usuario primero.', true); return; }
+  try {
+    const formData = new FormData();
+    formData.append('usuario', usuario);
+    formData.append('admin_password', passwordAdmin());
+    const resp = await fetch('/api/admin/exportar-usuario', { method: 'POST', credentials: 'same-origin', body: formData });
+    const data = await resp.json();
+    if (!resp.ok) { mostrar('resultado-individual', formatearDetalle(data), true); return; }
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = `${usuario}_backup.json`; a.click();
+    URL.revokeObjectURL(url);
+    mostrar('resultado-individual', 'Descarga iniciada.', false);
+  } catch (e) { mostrar('resultado-individual', 'Problema de conexión.', true); }
+}
+
+async function restaurarUsuarioIndividual() {
+  const usuario = usuarioSeleccionado();
+  const archivo = document.getElementById('archivo_individual').files[0];
+  if (!usuario || !archivo) { mostrar('resultado-individual', 'Selecciona un usuario y un archivo.', true); return; }
+  if (!confirm(`Esto SUSTITUIRÁ los datos de "${usuario}" por los del archivo. ¿Continuar?`)) return;
+  try {
+    const formData = new FormData();
+    formData.append('usuario', usuario);
+    formData.append('admin_password', passwordAdmin());
+    formData.append('archivo', archivo);
+    const resp = await fetch('/api/admin/restaurar-usuario', { method: 'POST', credentials: 'same-origin', body: formData });
+    const data = await resp.json();
+    mostrar('resultado-individual', resp.ok ? data.mensaje : formatearDetalle(data), !resp.ok);
+  } catch (e) { mostrar('resultado-individual', 'Problema de conexión.', true); }
+}
+
+async function borrarUsuarioIndividual() {
+  const usuario = usuarioSeleccionado();
+  if (!usuario) { mostrar('resultado-individual', 'Selecciona un usuario primero.', true); return; }
+  if (!confirm(`Esto BORRARÁ PERMANENTEMENTE todos los datos de "${usuario}". ¿Estás seguro?`)) return;
+  try {
+    const formData = new FormData();
+    formData.append('usuario', usuario);
+    formData.append('admin_password', passwordAdmin());
+    const resp = await fetch('/api/admin/borrar-usuario', { method: 'POST', credentials: 'same-origin', body: formData });
+    const data = await resp.json();
+    mostrar('resultado-individual', resp.ok ? data.mensaje : formatearDetalle(data), !resp.ok);
+  } catch (e) { mostrar('resultado-individual', 'Problema de conexión.', true); }
+}
+
+async function restaurarTotal() {
+  const archivo = document.getElementById('archivo_total').files[0];
+  if (!archivo) { mostrar('resultado-total', 'Selecciona un archivo .db.', true); return; }
+  if (!confirm('Esto SUSTITUIRÁ la base de datos completa de TODOS los usuarios. ¿Continuar?')) return;
+  try {
+    const formData = new FormData();
+    formData.append('archivo', archivo);
+    formData.append('admin_password', passwordAdmin());
+    const resp = await fetch('/api/admin/restaurar-db', { method: 'POST', credentials: 'same-origin', body: formData });
+    const data = await resp.json();
+    mostrar('resultado-total', resp.ok ? (data.mensaje || 'Restaurado.') : formatearDetalle(data), !resp.ok);
+  } catch (e) { mostrar('resultado-total', 'Problema de conexión.', true); }
+}
+
+async function borrarTodo() {
+  const frase = document.getElementById('frase_confirmacion').value;
+  if (frase !== 'BORRAR TODO') { mostrar('resultado-total', 'Escribe exactamente: BORRAR TODO', true); return; }
+  if (!confirm('Esto BORRARÁ PERMANENTEMENTE los datos de TODOS los usuarios. Esta acción no se puede deshacer. ¿Confirmas?')) return;
+  try {
+    const formData = new FormData();
+    formData.append('admin_password', passwordAdmin());
+    formData.append('confirmacion', frase);
+    const resp = await fetch('/api/admin/borrar-todo', { method: 'POST', credentials: 'same-origin', body: formData });
+    const data = await resp.json();
+    mostrar('resultado-total', resp.ok ? data.mensaje : formatearDetalle(data), !resp.ok);
+    if (resp.ok) document.getElementById('frase_confirmacion').value = '';
+  } catch (e) { mostrar('resultado-total', 'Problema de conexión.', true); }
+}
+
+async function comprobarBackupSinCifrar() {
+  try {
+    const formData = new FormData();
+    formData.append('admin_password', passwordAdmin());
+    const resp = await fetch('/api/admin/comprobar-backup-sin-cifrar', { method: 'POST', credentials: 'same-origin', body: formData });
+    const data = await resp.json();
+    if (!resp.ok) { mostrar('resultado-backup-plano', formatearDetalle(data), true); return; }
+    mostrar('resultado-backup-plano', data.existe
+      ? `Existe (${data.tamano_bytes} bytes). Bórrala cuando confirmes que todo funciona.`
+      : 'No existe ninguna copia sin cifrar pendiente.', false);
+  } catch (e) { mostrar('resultado-backup-plano', 'Problema de conexión.', true); }
+}
+
+async function borrarBackupSinCifrar() {
+  if (!confirm('¿Borrar definitivamente la copia sin cifrar del disco?')) return;
+  try {
+    const formData = new FormData();
+    formData.append('admin_password', passwordAdmin());
+    const resp = await fetch('/api/admin/borrar-backup-sin-cifrar', { method: 'POST', credentials: 'same-origin', body: formData });
+    const data = await resp.json();
+    mostrar('resultado-backup-plano', resp.ok ? data.mensaje : formatearDetalle(data), !resp.ok);
+  } catch (e) { mostrar('resultado-backup-plano', 'Problema de conexión.', true); }
+}
+
+function formatearBytes(bytes) {
+  if (bytes < 1024) return bytes + ' B';
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+  return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+}
+
+async function listarBackupsAutomaticos() {
+  try {
+    const formData = new FormData();
+    formData.append('admin_password', passwordAdmin());
+    const resp = await fetch('/api/admin/listar-backups-automaticos', { method: 'POST', credentials: 'same-origin', body: formData });
+    const data = await resp.json();
+    if (!resp.ok) { mostrar('resultado-backups-automaticos', formatearDetalle(data), true); return; }
+    const sel = document.getElementById('selector_backup_automatico');
+    if (data.length === 0) {
+      sel.innerHTML = '<option value="">— Todavía no hay backups automáticos —</option>';
+    } else {
+      sel.innerHTML = data.map(b => `<option value="${b.nombre}">${b.nombre} (${formatearBytes(b.tamano_bytes)})</option>`).join('');
+    }
+    mostrar('resultado-backups-automaticos', `${data.length} backup(s) disponibles.`, false);
+  } catch (e) { mostrar('resultado-backups-automaticos', 'Problema de conexión.', true); }
+}
+
+async function descargarBackupAutomatico() {
+  const nombre = document.getElementById('selector_backup_automatico').value;
+  if (!nombre) { mostrar('resultado-backups-automaticos', 'Carga y selecciona un backup primero.', true); return; }
+  try {
+    const formData = new FormData();
+    formData.append('admin_password', passwordAdmin());
+    formData.append('nombre', nombre);
+    const resp = await fetch('/api/admin/descargar-backup-automatico', { method: 'POST', credentials: 'same-origin', body: formData });
+    if (!resp.ok) {
+      const data = await resp.json();
+      mostrar('resultado-backups-automaticos', formatearDetalle(data), true);
+      return;
+    }
+    const blob = await resp.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = nombre; a.click();
+    URL.revokeObjectURL(url);
+    mostrar('resultado-backups-automaticos', 'Descarga iniciada.', false);
+  } catch (e) { mostrar('resultado-backups-automaticos', 'Problema de conexión.', true); }
+}
+</script>
+</body>
+</html>
