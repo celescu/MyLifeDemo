@@ -43,7 +43,7 @@ import anthropic
 # ---------------------------------------------------------------------------
 
 DB_PATH = os.environ.get("DB_PATH", os.path.join(os.path.dirname(__file__), "memoria.db"))
-MODEL = "claude-sonnet-5"  # mismo nivel de calidad que claude-sonnet-4-6, más barato
+MODEL = os.environ.get("MODEL", "claude-sonnet-5")  # cambiable sin redeploy si hiciera falta
 
 # Precios oficiales actuales de claude-sonnet-5 por millón de tokens.
 # Si cambias MODEL, revisa y actualiza también estos dos valores.
@@ -87,6 +87,23 @@ client = anthropic.Anthropic(
     timeout=60.0,   # por defecto; se amplía por llamada donde hace falta más margen
     max_retries=1,  # menos reintentos automáticos silenciosos: si falla, falla rápido y claro
 )
+
+
+def llamar_a_claude(**kwargs):
+    """Envuelve client.messages.create() para que, si la API de Anthropic falla
+    (modelo no disponible, límite de la cuenta, error de red...), quede un
+    traceback claro en los logs del servidor y el usuario reciba un mensaje
+    entendible en vez de un error genérico sin explicación."""
+    import traceback
+    try:
+        return client.messages.create(**kwargs)
+    except anthropic.APIError as e:
+        print(f"[ERROR] Llamada a Anthropic falló (modelo={kwargs.get('model')}): {e}")
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=502,
+            detail="La entrevistadora no ha podido responder ahora mismo. Inténtalo de nuevo en un momento.",
+        )
 
 limiter = Limiter(key_func=get_remote_address)
 
@@ -792,7 +809,7 @@ def enviar_mensaje(request: Request, payload: MensajeIn, usuario: str = Depends(
     mensajes.append({"role": "user", "content": payload.mensaje})
 
     _inicio = time.perf_counter()
-    respuesta = client.messages.create(
+    respuesta = llamar_a_claude(
         model=MODEL,
         max_tokens=500,
         system=SYSTEM_PROMPT_ENTREVISTA,
@@ -845,7 +862,7 @@ def cerrar_sesion(payload: CerrarSesionIn, usuario: str = Depends(obtener_usuari
 
     _inicio = time.perf_counter()
     try:
-        respuesta = client.messages.create(
+        respuesta = llamar_a_claude(
             model=MODEL,
             max_tokens=4000,
             system=SYSTEM_PROMPT_RESUMEN,
@@ -962,7 +979,7 @@ def enviar_mensaje_aportacion(request: Request, payload: MensajeIn, usuario: str
     mensajes.append({"role": "user", "content": payload.mensaje})
 
     _inicio = time.perf_counter()
-    respuesta = client.messages.create(
+    respuesta = llamar_a_claude(
         model=MODEL,
         max_tokens=500,
         system=SYSTEM_PROMPT_APORTACION,
@@ -1442,7 +1459,7 @@ def generar_autobiografia(usuario: str = Depends(obtener_usuario_actual)):
 
     _inicio = time.perf_counter()
     try:
-        respuesta = client.messages.create(
+        respuesta = llamar_a_claude(
             model=MODEL,
             max_tokens=8000,
             system=SYSTEM_PROMPT_AUTOBIOGRAFIA,
