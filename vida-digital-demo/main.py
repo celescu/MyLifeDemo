@@ -43,7 +43,7 @@ import anthropic
 # ---------------------------------------------------------------------------
 
 DB_PATH = os.environ.get("DB_PATH", os.path.join(os.path.dirname(__file__), "memoria.db"))
-MODEL = os.environ.get("MODEL", "claude-sonnet-5")  # cambiable sin redeploy si hiciera falta
+MODEL = os.environ.get("MODEL") or "claude-sonnet-5"  # "or" ignora también una variable vacía, no solo ausente
 
 # Precios oficiales actuales de claude-sonnet-5 por millón de tokens.
 # Si cambias MODEL, revisa y actualiza también estos dos valores.
