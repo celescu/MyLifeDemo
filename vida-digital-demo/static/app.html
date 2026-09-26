@@ -510,6 +510,8 @@ let reconocimientoVoz = null;
 let dictadoActivo = false;
 let dictadoDetenidoManualmente = false;
 let textoBaseAntesDeDictar = '';
+let temporizadorSilencioDictado = null;
+const SILENCIO_AUTOENVIO_MS = 3000;
 
 function inicializarDictado() {
   const ClaseReconocimiento = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -530,6 +532,8 @@ function inicializarDictado() {
   reconocimientoVoz.interimResults = true;
 
   reconocimientoVoz.onresult = (evento) => {
+    if (!dictadoActivo) return; // evita que un resultado tardío (tras stop()) repinte la caja ya enviada
+
     let textoFinal = '';
     let textoInterino = '';
     for (let i = 0; i < evento.results.length; i++) {
@@ -543,6 +547,18 @@ function inicializarDictado() {
     const input = document.getElementById('input');
     const separador = textoBaseAntesDeDictar && !textoBaseAntesDeDictar.endsWith(' ') ? ' ' : '';
     input.value = textoBaseAntesDeDictar + separador + textoFinal + textoInterino;
+
+    // Auto-envío tras unos segundos de silencio: cada nuevo fragmento de voz
+    // reinicia la cuenta atrás, así que solo se dispara cuando la persona
+    // deja de hablar de verdad.
+    clearTimeout(temporizadorSilencioDictado);
+    if (input.value.trim()) {
+      temporizadorSilencioDictado = setTimeout(() => {
+        if (dictadoActivo && document.getElementById('input').value.trim()) {
+          enviar();
+        }
+      }, SILENCIO_AUTOENVIO_MS);
+    }
   };
 
   reconocimientoVoz.onerror = (evento) => {
@@ -582,6 +598,7 @@ function alternarDictado() {
 
   if (dictadoActivo) {
     dictadoDetenidoManualmente = true;
+    clearTimeout(temporizadorSilencioDictado);
     reconocimientoVoz.stop();
     detenerDictadoVisualmente();
     return;
@@ -605,6 +622,7 @@ inicializarDictado();
 async function enviar() {
   if (dictadoActivo) {
     dictadoDetenidoManualmente = true;
+    clearTimeout(temporizadorSilencioDictado);
     reconocimientoVoz.stop();
     detenerDictadoVisualmente();
   }
