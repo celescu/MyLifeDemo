@@ -326,6 +326,7 @@
   <div style="border-bottom: 1px solid var(--linea); padding-bottom: 14px; margin-bottom: 24px;"></div>
   <div id="reloj-sesion"><span class="punto-vivo"></span><span id="reloj-texto">Sesión en curso: 00:00</span></div>
   <div id="aviso-aportacion" style="display:none; margin-bottom:10px; padding:10px 14px; background:var(--papel-oscuro); border:1px solid var(--linea); border-radius:3px; font-family: system-ui, sans-serif; font-size:0.85rem;"></div>
+  <div id="aviso-reconstruccion" style="display:none; margin-bottom:10px; padding:10px 14px; background:var(--papel-oscuro); border:1px solid var(--linea); border-radius:3px; font-family: system-ui, sans-serif; font-size:0.85rem;"></div>
   <div id="lista-aportaciones"></div>
   <div id="chat"></div>
   <textarea id="input" rows="3" placeholder="Escribe tu respuesta..."></textarea>
@@ -347,7 +348,7 @@
         <button onclick="abrirMetricas(); cerrarMenu();">Métricas de uso</button>
         <button onclick="abrirAutobiografia(); cerrarMenu();">Mi autobiografía</button>
         <button onclick="abrirMisDatos(); cerrarMenu();">Mis datos</button>
-        <button onclick="reconstruirMemoria(); cerrarMenu();">🛠️ Reconstruir memoria desde sesiones antiguas</button>
+        <button id="btn-reconstruir-memoria" onclick="reconstruirMemoria(); cerrarMenu();">🛠️ Reconstruir memoria desde sesiones antiguas</button>
         <button onclick="salir()">Salir</button>
       </div>
     </div>
@@ -1023,21 +1024,30 @@ async function reconstruirMemoria() {
     '¿Quieres continuar?';
   if (!confirm(aviso)) return;
 
+  const btn = document.getElementById('btn-reconstruir-memoria');
+  const estado = document.getElementById('aviso-reconstruccion');
+  btn.disabled = true;
+  estado.style.display = 'block';
+  estado.textContent = '🛠️ Reconstruyendo memoria a partir de tus sesiones antiguas... esto puede tardar varios minutos según cuántas tengas. No cierres esta pestaña hasta que termine.';
+
   try {
     const resp = await apiFetch('/api/reconstruir_memoria', { method: 'POST' });
     const data = await resp.json();
     if (!resp.ok) {
-      alert('No se pudo reconstruir la memoria: ' + (data.detail || 'error desconocido'));
+      estado.textContent = '❌ No se pudo reconstruir la memoria: ' + (data.detail || 'error desconocido');
       return;
     }
-    let mensaje = `Memoria reconstruida.\n\nSesiones procesadas: ${data.sesiones_procesadas.length}\n` +
-      `Sesiones sin respuesta (omitidas): ${data.sesiones_omitidas_sin_respuesta.length}`;
+    let mensaje = `✅ Memoria reconstruida. Sesiones procesadas: ${data.sesiones_procesadas.length}. ` +
+      `Sesiones sin respuesta (omitidas): ${data.sesiones_omitidas_sin_respuesta.length}.`;
     if (data.sesiones_con_error.length > 0) {
-      mensaje += `\nSesiones con error (revisar): ${data.sesiones_con_error.map(e => e.sesion_id).join(', ')}`;
+      mensaje += ` Sesiones con error (revisar): ${data.sesiones_con_error.map(e => e.sesion_id).join(', ')}.`;
     }
+    estado.textContent = mensaje;
     alert(mensaje);
   } catch (e) {
-    alert('No se pudo reconstruir la memoria. Inténtalo de nuevo.');
+    estado.textContent = '❌ No se pudo reconstruir la memoria. Inténtalo de nuevo.';
+  } finally {
+    btn.disabled = false;
   }
 }
 
