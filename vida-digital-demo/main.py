@@ -837,6 +837,41 @@ def enviar_mensaje(request: Request, payload: MensajeIn, usuario: str = Depends(
     return {"sesion_id": sesion_id, "respuesta": texto, "fecha_inicio": fecha_inicio}
 
 
+def construir_resumen_desde_transcripcion(usuario: str, resumen_previo: dict, transcripcion: str, timeout: float = 100.0):
+    """Llama al modelo con la misma herramienta que usa el cierre de sesión
+    normal, para fusionar una transcripción con el resumen de memoria previo.
+    Se usa tanto al cerrar una sesión como al reconstruir la memoria completa
+    a partir de sesiones antiguas."""
+    respuesta = llamar_a_claude(
+        model=MODEL,
+        max_tokens=4000,
+        system=SYSTEM_PROMPT_RESUMEN,
+        tools=[HERRAMIENTA_RESUMEN],
+        tool_choice={"type": "tool", "name": "guardar_resumen_memoria"},
+        messages=[{
+            "role": "user",
+            "content": (
+                f"Año actual real: {datetime.utcnow().year}\n"
+                f"Año de nacimiento ya conocido (null si aún no se sabe): "
+                f"{json.dumps(resumen_previo.get('anio_nacimiento'))}\n\n"
+                f"Resumen previo:\n{json.dumps(resumen_previo, ensure_ascii=False)}\n\n"
+                f"Transcripción de la nueva sesión:\n{transcripcion}"
+            ),
+        }],
+        timeout=timeout,
+    )
+    bloque_herramienta = next((b for b in respuesta.content if b.type == "tool_use"), None)
+    if bloque_herramienta is None:
+        print(f"[AVISO] El modelo no devolvió una llamada a la herramienta para {usuario}")
+        print(f"[AVISO] stop_reason: {respuesta.stop_reason}, contenido: {respuesta.content}")
+        return None, None, respuesta
+
+    nuevo_resumen = bloque_herramienta.input
+    titulo_sesion = nuevo_resumen.pop("titulo_sesion", None)
+    validar_coherencia_fechas(nuevo_resumen, usuario)
+    return nuevo_resumen, titulo_sesion, respuesta
+
+
 @app.post("/api/cerrar_sesion")
 def cerrar_sesion(payload: CerrarSesionIn, usuario: str = Depends(obtener_usuario_actual)):
     with db() as conn:
@@ -862,40 +897,16 @@ def cerrar_sesion(payload: CerrarSesionIn, usuario: str = Depends(obtener_usuari
 
     _inicio = time.perf_counter()
     try:
-        respuesta = llamar_a_claude(
-            model=MODEL,
-            max_tokens=4000,
-            system=SYSTEM_PROMPT_RESUMEN,
-            tools=[HERRAMIENTA_RESUMEN],
-            tool_choice={"type": "tool", "name": "guardar_resumen_memoria"},
-            messages=[{
-                "role": "user",
-                "content": (
-                    f"Año actual real: {datetime.utcnow().year}\n"
-                    f"Año de nacimiento ya conocido (null si aún no se sabe): "
-                    f"{json.dumps(resumen_previo.get('anio_nacimiento'))}\n\n"
-                    f"Resumen previo:\n{json.dumps(resumen_previo, ensure_ascii=False)}\n\n"
-                    f"Transcripción de la nueva sesión:\n{transcripcion}"
-                ),
-            }],
-            timeout=100.0,  # el resumen puede tardar más que un mensaje normal, pero no infinito
+        nuevo_resumen, titulo_sesion, respuesta = construir_resumen_desde_transcripcion(
+            usuario, resumen_previo, transcripcion
         )
     except anthropic.APITimeoutError:
         print(f"[tiempos] cerrar_sesion ({usuario}, sesión {payload.sesion_id}): TIMEOUT tras {time.perf_counter() - _inicio:.1f}s")
         return {"error": "la generación del resumen ha tardado demasiado y se ha cancelado; la conversación sigue guardada íntegra, puedes reintentar cerrar esta sesión más tarde"}
     print(f"[tiempos] cerrar_sesion ({usuario}, sesión {payload.sesion_id}): {time.perf_counter() - _inicio:.1f}s")
 
-    bloque_herramienta = next(
-        (b for b in respuesta.content if b.type == "tool_use"), None
-    )
-    if bloque_herramienta is None:
-        print(f"[AVISO] El modelo no devolvió una llamada a la herramienta para {usuario}")
-        print(f"[AVISO] stop_reason: {respuesta.stop_reason}, contenido: {respuesta.content}")
+    if nuevo_resumen is None:
         return {"error": "no se pudo generar el resumen esta vez, la conversación sigue guardada íntegra"}
-
-    nuevo_resumen = bloque_herramienta.input
-    titulo_sesion = nuevo_resumen.pop("titulo_sesion", None)  # es de esta sesión, no de la biografía acumulada
-    validar_coherencia_fechas(nuevo_resumen, usuario)
 
     guardar_resumen(usuario, nuevo_resumen)
     sumar_tokens(payload.sesion_id, respuesta.usage.input_tokens, respuesta.usage.output_tokens)
@@ -905,6 +916,64 @@ def cerrar_sesion(payload: CerrarSesionIn, usuario: str = Depends(obtener_usuari
         aplicar_titulo_generado(payload.sesion_id, titulo_sesion)
 
     return {"resumen": nuevo_resumen}
+
+
+@app.post("/api/reconstruir_memoria")
+@limiter.limit("2/hour")
+def reconstruir_memoria(request: Request, usuario: str = Depends(obtener_usuario_actual)):
+    """Recorre todas las sesiones propias guardadas, en orden cronológico, y
+    reconstruye desde cero el resumen de memoria acumulada. Pensado para
+    recuperar la memoria si el resumen se perdió o quedó corrupto, ya que las
+    transcripciones originales de cada sesión siguen intactas en la base de
+    datos. Reutiliza el mismo mecanismo que el cierre de sesión normal, sesión
+    a sesión, así que cuesta tantas llamadas a la API como sesiones haya."""
+    with db() as conn:
+        filas = conn.execute(
+            "SELECT id, mensajes FROM sesiones WHERE usuario = ? AND (tipo IS NULL OR tipo = 'propia') ORDER BY fecha ASC, id ASC",
+            (usuario,),
+        ).fetchall()
+
+    resumen_actual = {}
+    procesadas, omitidas, errores = [], [], []
+
+    for fila in filas:
+        mensajes = json.loads(fila["mensajes"])
+        turnos_reales = [m for m in mensajes if m["role"] == "assistant"]
+        if not turnos_reales:
+            omitidas.append(fila["id"])
+            continue
+
+        transcripcion = "\n".join(
+            f"{m['role']}: {m['content']}" for m in mensajes if m["role"] in ("user", "assistant")
+        )
+        try:
+            nuevo_resumen, titulo_sesion, respuesta = construir_resumen_desde_transcripcion(
+                usuario, resumen_actual, transcripcion
+            )
+        except anthropic.APITimeoutError:
+            errores.append({"sesion_id": fila["id"], "error": "timeout"})
+            continue
+
+        if nuevo_resumen is None:
+            errores.append({"sesion_id": fila["id"], "error": "el modelo no devolvió resumen"})
+            continue
+
+        resumen_actual = nuevo_resumen
+        sumar_tokens(fila["id"], respuesta.usage.input_tokens, respuesta.usage.output_tokens)
+        registrar_uso_diario(usuario, respuesta.usage.input_tokens, respuesta.usage.output_tokens)
+        marcar_cerrada(fila["id"])
+        if titulo_sesion:
+            aplicar_titulo_generado(fila["id"], titulo_sesion)
+        procesadas.append(fila["id"])
+
+    guardar_resumen(usuario, resumen_actual)
+
+    return {
+        "resumen": resumen_actual,
+        "sesiones_procesadas": procesadas,
+        "sesiones_omitidas_sin_respuesta": omitidas,
+        "sesiones_con_error": errores,
+    }
 
 
 def aplicar_titulo_generado(sesion_id: int, titulo: str):
@@ -1147,6 +1216,21 @@ def ver_sesion(sesion_id: int, usuario: str = Depends(obtener_usuario_actual)):
         if not (m["role"] == "user" and m["content"].startswith(MARCADOR_CONTEXTO_INTERNO))
     ]
     return mensajes_visibles
+
+
+@app.delete("/api/sesion/{sesion_id}")
+def borrar_sesion(sesion_id: int, usuario: str = Depends(obtener_usuario_actual)):
+    """Borra una sesión propia o de aportación externa (por ejemplo, una que
+    se quedó vacía o a medias por un fallo). No toca el resumen de memoria:
+    solo elimina esta conversación concreta."""
+    with db() as conn:
+        cur = conn.execute(
+            "DELETE FROM sesiones WHERE id = ? AND usuario = ?",
+            (sesion_id, usuario),
+        )
+    if cur.rowcount == 0:
+        raise HTTPException(status_code=404, detail="Sesión no encontrada")
+    return {"ok": True}
 
 
 def contar_palabras_usuario(mensajes: list) -> int:
