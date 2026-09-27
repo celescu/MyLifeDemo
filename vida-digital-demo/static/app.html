@@ -440,9 +440,27 @@ async function apiFetch(url, opts = {}) {
   return resp;
 }
 
+function cerrarPanelesAbiertos() {
+  // Cualquier vista/lista que pueda quedar abierta al margen del menú.
+  const ids = [
+    'memoria', 'lista-sesiones', 'transcripcion', 'lista-aportaciones',
+    'vista-cuestionario', 'vista-metricas', 'vista-autobiografia', 'vista-mis-datos',
+  ];
+  ids.forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.style.display = 'none';
+  });
+  transcripcionAbiertaId = null;
+  aportacionAbiertaId = null;
+  document.querySelectorAll('#lista-menu button.activo').forEach(b => b.classList.remove('activo'));
+}
+
 function alternarMenu(event) {
   event.stopPropagation();
-  document.getElementById('lista-menu').classList.toggle('abierta');
+  const menu = document.getElementById('lista-menu');
+  const seVaAAbrir = !menu.classList.contains('abierta');
+  if (seVaAAbrir) cerrarPanelesAbiertos();
+  menu.classList.toggle('abierta');
 }
 
 function cerrarMenu() {
