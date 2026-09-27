@@ -42,7 +42,15 @@ import anthropic
 # Configuración y secretos
 # ---------------------------------------------------------------------------
 
-DB_PATH = os.environ.get("DB_PATH", os.path.join(os.path.dirname(__file__), "memoria.db"))
+# En Railway, si hay un volumen montado, usar automáticamente su raíz para
+# la base de datos. DB_PATH explícita tiene prioridad. Así un despliegue desde
+# GitHub nunca crea accidentalmente una base nueva fuera del volumen.
+DB_PATH = os.environ.get("DB_PATH") or (
+    os.path.join(os.environ["RAILWAY_VOLUME_MOUNT_PATH"], "memoria.db")
+    if os.environ.get("RAILWAY_VOLUME_MOUNT_PATH")
+    else os.path.join(os.path.dirname(__file__), "memoria.db")
+)
+print(f"[db] usando base de datos: {DB_PATH}")
 MODEL = os.environ.get("MODEL") or "claude-sonnet-5"  # "or" ignora también una variable vacía, no solo ausente
 
 # Precios oficiales actuales de claude-sonnet-5 por millón de tokens.

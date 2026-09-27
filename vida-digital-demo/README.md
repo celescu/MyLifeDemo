@@ -248,3 +248,20 @@ significar pérdida de datos:
 - Reescribir `seguridad.html` con base legal más formal (encargados del
   tratamiento, plazos de conservación) si el proyecto pasa a tener
   usuarios de pago reales.
+
+
+## Railway y memoria persistente
+
+La base de datos `memoria.db` **no debe formar parte del repositorio ni del ZIP de despliegue**.
+
+La aplicación funciona así:
+
+- Si existe `DB_PATH`, utiliza exactamente esa ruta.
+- En Railway, si hay un Volume adjunto, utiliza automáticamente `RAILWAY_VOLUME_MOUNT_PATH/memoria.db`. Railway proporciona esa variable automáticamente al servicio.
+- Solo en un entorno sin Railway ni `DB_PATH` se utiliza `memoria.db` junto a `main.py`.
+
+Esto evita que un nuevo despliegue desde GitHub cree una base de datos vacía separada de la del Volume. El Volume debe contener la `memoria.db` de producción y no debe borrarse ni sustituirse durante un despliegue.
+
+### Recuperar la memoria a partir de las conversaciones
+
+Si la tabla de memoria queda vacía pero las conversaciones siguen guardadas, entra en **Avanzado → Reconstruir recuerdos desde las conversaciones**. La aplicación recorrerá las sesiones propias en orden cronológico y reconstruirá el resumen de memoria mediante el mismo mecanismo utilizado al cerrar una sesión. Esta operación consume llamadas a la API y debe utilizarse como recuperación, no como operación cotidiana.
