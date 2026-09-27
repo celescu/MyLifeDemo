@@ -335,10 +335,10 @@
   </div>
   <div class="acciones">
     <button id="btn-enviar" onclick="enviar()">Enviar</button>
+    <button id="btn-cerrar-sesion" onclick="cerrarSesion(event)">Cerrar sesión de hoy</button>
     <div class="menu-desplegable">
       <button id="btn-menu" onclick="alternarMenu(event)">☰ Menú</button>
       <div id="lista-menu" class="lista-menu">
-        <button onclick="cerrarSesion(event); cerrarMenu();">Cerrar sesión de hoy</button>
         <button onclick="verMemoria(event); cerrarMenu();">Ver memoria acumulada</button>
         <button onclick="verSesiones(event); cerrarMenu();">Ver sesiones guardadas</button>
         <button onclick="iniciarAportacion(); cerrarMenu();">👪 Aportación de un familiar</button>
@@ -347,6 +347,7 @@
         <button onclick="abrirMetricas(); cerrarMenu();">Métricas de uso</button>
         <button onclick="abrirAutobiografia(); cerrarMenu();">Mi autobiografía</button>
         <button onclick="abrirMisDatos(); cerrarMenu();">Mis datos</button>
+        <button onclick="reconstruirMemoria(); cerrarMenu();">🛠️ Reconstruir memoria desde sesiones antiguas</button>
         <button onclick="salir()">Salir</button>
       </div>
     </div>
@@ -973,8 +974,71 @@ async function refrescarListaSesiones() {
       div.appendChild(btnCerrar);
     }
 
+    const btnBorrar = document.createElement('button');
+    btnBorrar.textContent = '🗑️ Borrar';
+    btnBorrar.style.marginLeft = '10px';
+    btnBorrar.style.fontSize = '0.75rem';
+    btnBorrar.style.padding = '4px 10px';
+    btnBorrar.onclick = (e) => {
+      e.stopPropagation();
+      borrarSesion(s.id, s.titulo, btnBorrar);
+    };
+    div.appendChild(btnBorrar);
+
     contenedor.appendChild(div);
   });
+}
+
+async function borrarSesion(id, titulo, btn) {
+  if (!confirm(`¿Seguro que quieres borrar la sesión "${titulo}" (#${id})? Esto no se puede deshacer. No afecta a tu memoria acumulada ya guardada, solo borra esta conversación.`)) {
+    return;
+  }
+  const textoOriginal = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = 'Borrando...';
+  try {
+    const resp = await apiFetch(`/api/sesion/${id}`, { method: 'DELETE' });
+    if (!resp.ok) {
+      alert('No se pudo borrar la sesión.');
+      return;
+    }
+    if (transcripcionAbiertaId === id) {
+      transcripcionAbiertaId = null;
+      document.getElementById('transcripcion').style.display = 'none';
+    }
+    await refrescarListaSesiones();
+  } catch (e) {
+    alert('No se pudo borrar la sesión. Inténtalo de nuevo.');
+    btn.disabled = false;
+    btn.textContent = textoOriginal;
+  }
+}
+
+async function reconstruirMemoria() {
+  const aviso =
+    'Esto va a repasar TODAS tus sesiones guardadas, de la más antigua a la ' +
+    'más reciente, y reconstruir desde cero la memoria acumulada a partir de ' +
+    'ellas. Puede tardar bastante si tienes muchas sesiones, y consume una ' +
+    'llamada a la IA por cada una (con su coste correspondiente).\n\n' +
+    '¿Quieres continuar?';
+  if (!confirm(aviso)) return;
+
+  try {
+    const resp = await apiFetch('/api/reconstruir_memoria', { method: 'POST' });
+    const data = await resp.json();
+    if (!resp.ok) {
+      alert('No se pudo reconstruir la memoria: ' + (data.detail || 'error desconocido'));
+      return;
+    }
+    let mensaje = `Memoria reconstruida.\n\nSesiones procesadas: ${data.sesiones_procesadas.length}\n` +
+      `Sesiones sin respuesta (omitidas): ${data.sesiones_omitidas_sin_respuesta.length}`;
+    if (data.sesiones_con_error.length > 0) {
+      mensaje += `\nSesiones con error (revisar): ${data.sesiones_con_error.map(e => e.sesion_id).join(', ')}`;
+    }
+    alert(mensaje);
+  } catch (e) {
+    alert('No se pudo reconstruir la memoria. Inténtalo de nuevo.');
+  }
 }
 
 async function verSesiones(ev) {
