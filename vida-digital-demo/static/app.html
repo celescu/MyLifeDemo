@@ -171,6 +171,8 @@
     font-size:.78rem; color:var(--tinta-suave); display:none; overflow:auto;
   }
   #lista-sesiones, #lista-aportaciones { max-width:760px; margin:24px auto 0; }
+  .panel-cierre { max-width:760px; margin:8px auto 0; text-align:right; }
+  .panel-cierre .boton-texto { font-size:.72rem; }
   .sesion-item { padding:16px 0; border-top:1px solid var(--linea); cursor:pointer; color:var(--tinta); }
   .sesion-item:hover { background: rgba(237,227,208,.35); }
   .sesion-item.activa { background: transparent; border-color:var(--sello); }
@@ -255,6 +257,13 @@
         </div>
       </div>
       <div class="cuenta-nav">
+        <button id="btn-avanzado" class="nav-boton" onclick="alternarAvanzado(event)">Avanzado</button>
+        <div id="menu-avanzado" class="menu-cuenta">
+          <button onclick="abrirMetricas(); cerrarAvanzado();">Métricas de uso</button>
+          <button onclick="reconstruirMemoria(); cerrarAvanzado();">Reconstruir recuerdos desde las conversaciones</button>
+        </div>
+      </div>
+      <div class="cuenta-nav">
         <button id="btn-cuenta" class="nav-boton" onclick="alternarCuenta(event)">Cuenta</button>
         <div id="menu-cuenta" class="menu-cuenta">
           <button onclick="abrirCuestionario(); cerrarCuenta();">Cómo me veo</button>
@@ -302,8 +311,11 @@
       </div>
 
       <pre id="memoria"></pre>
+      <div id="acciones-memoria" class="panel-cierre" style="display:none;"><button class="boton-texto" onclick="cerrarRecuerdos()">Cerrar recuerdos</button></div>
       <div id="lista-sesiones"></div>
+      <div id="acciones-sesiones" class="panel-cierre" style="display:none;"><button class="boton-texto" onclick="cerrarConversaciones()">Cerrar conversaciones</button></div>
       <pre id="transcripcion"></pre>
+      <div id="acciones-transcripcion" class="panel-cierre" style="display:none;"><button class="boton-texto" onclick="cerrarTranscripcion()">Cerrar transcripción</button></div>
     </section>
 
     <section id="vista-cuestionario" class="bloque-vista" style="display:none;">
@@ -369,6 +381,7 @@ function ocultarVistas() {
     if (el) el.style.display = 'none';
   });
   cerrarFamilia();
+  cerrarAvanzado();
   cerrarCuenta();
 }
 function mostrarEntrevista() {
@@ -393,6 +406,13 @@ function alternarFamilia(event) {
   document.getElementById('menu-familia').classList.toggle('abierto');
 }
 function cerrarFamilia() { const el = document.getElementById('menu-familia'); if (el) el.classList.remove('abierto'); }
+function alternarAvanzado(event) {
+  event.stopPropagation();
+  cerrarFamilia();
+  cerrarCuenta();
+  document.getElementById('menu-avanzado').classList.toggle('abierto');
+}
+function cerrarAvanzado() { const el = document.getElementById('menu-avanzado'); if (el) el.classList.remove('abierto'); }
 function alternarCuenta(event) {
   event.stopPropagation();
   cerrarFamilia();
@@ -401,8 +421,10 @@ function alternarCuenta(event) {
 function cerrarCuenta() { const el = document.getElementById('menu-cuenta'); if (el) el.classList.remove('abierto'); }
 document.addEventListener('click', (event) => {
   const familia = document.getElementById('menu-familia');
+  const avanzado = document.getElementById('menu-avanzado');
   const cuenta = document.getElementById('menu-cuenta');
   if (familia && !familia.contains(event.target) && event.target !== document.getElementById('btn-familia')) cerrarFamilia();
+  if (avanzado && !avanzado.contains(event.target) && event.target !== document.getElementById('btn-avanzado')) cerrarAvanzado();
   if (cuenta && !cuenta.contains(event.target) && event.target !== document.getElementById('btn-cuenta')) cerrarCuenta();
 });
 
@@ -783,9 +805,7 @@ async function verAportaciones(ev) {
   const contenedor = document.getElementById('lista-aportaciones');
 
   if (btn.classList.contains('activo')) {
-    contenedor.innerHTML = '';
-    contenedor.style.display = 'none';
-    btn.classList.remove('activo');
+    cerrarConversaciones();
     return;
   }
 
@@ -844,8 +864,7 @@ async function verMemoria(ev) {
   const el = document.getElementById('memoria');
 
   if (el.style.display === 'block') {
-    el.style.display = 'none';
-    btn.classList.remove('activo');
+    cerrarRecuerdos();
     return;
   }
 
@@ -857,11 +876,21 @@ async function verMemoria(ev) {
     const data = await resp.json();
     el.style.display = 'block';
     el.textContent = JSON.stringify(data, null, 2);
+    document.getElementById('acciones-memoria').style.display = 'block';
     btn.classList.add('activo');
   } finally {
     btn.disabled = false;
     btn.textContent = textoOriginal;
   }
+}
+
+function cerrarRecuerdos() {
+  const el = document.getElementById('memoria');
+  const acciones = document.getElementById('acciones-memoria');
+  if (el) { el.style.display = 'none'; el.textContent = ''; }
+  if (acciones) acciones.style.display = 'none';
+  const btn = document.getElementById('nav-recuerdos');
+  if (btn) btn.classList.remove('activo');
 }
 
 async function renombrarSesion(id, tituloActual) {
@@ -966,8 +995,7 @@ async function borrarSesion(id, titulo, btn) {
       return;
     }
     if (transcripcionAbiertaId === id) {
-      transcripcionAbiertaId = null;
-      document.getElementById('transcripcion').style.display = 'none';
+      cerrarTranscripcion();
     }
     await refrescarListaSesiones();
   } catch (e) {
@@ -1021,6 +1049,7 @@ async function verSesiones(ev) {
   try {
     contenedor.style.display = 'block';
     await refrescarListaSesiones();
+    document.getElementById('acciones-sesiones').style.display = 'block';
     btn.classList.add('activo');
   } finally {
     btn.disabled = false;
@@ -1028,12 +1057,30 @@ async function verSesiones(ev) {
   }
 }
 
+function cerrarConversaciones() {
+  const contenedor = document.getElementById('lista-sesiones');
+  const acciones = document.getElementById('acciones-sesiones');
+  if (contenedor) { contenedor.innerHTML = ''; contenedor.style.display = 'none'; }
+  if (acciones) acciones.style.display = 'none';
+  const btn = document.getElementById('nav-conversaciones');
+  if (btn) btn.classList.remove('activo');
+  cerrarTranscripcion();
+}
+
+function cerrarTranscripcion() {
+  const el = document.getElementById('transcripcion');
+  const acciones = document.getElementById('acciones-transcripcion');
+  if (el) { el.style.display = 'none'; el.textContent = ''; }
+  if (acciones) acciones.style.display = 'none';
+  transcripcionAbiertaId = null;
+  document.querySelectorAll('.sesion-item').forEach(item => item.classList.remove('activa'));
+}
+
 async function verTranscripcion(id, titulo) {
   const el = document.getElementById('transcripcion');
 
   if (transcripcionAbiertaId === id) {
-    el.style.display = 'none';
-    transcripcionAbiertaId = null;
+    cerrarTranscripcion();
   } else {
     const resp = await apiFetch(`/api/sesion/${id}`);
     const mensajes = await resp.json();
@@ -1043,6 +1090,7 @@ async function verTranscripcion(id, titulo) {
       .map(m => `[${m.role === 'user' ? 'TÚ' : 'IA'}] ${m.content}`)
       .join('\n\n---\n\n');
     el.textContent = `— ${titulo} —\n\n${cuerpo}`;
+    document.getElementById('acciones-transcripcion').style.display = 'block';
     transcripcionAbiertaId = id;
   }
 
