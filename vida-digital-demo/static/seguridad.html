@@ -5,88 +5,28 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Privacidad y seguridad — Mi vida</title>
 <style>
-  :root {
-    --papel: #f2e9d8;
-    --papel-oscuro: #e8dcc4;
-    --tinta: #3a3128;
-    --tinta-suave: #6b5f4f;
-    --linea: #cdbd9f;
-    --sello: #a8574a;
-    --sello-oscuro: #8c453a;
-  }
-  * { box-sizing: border-box; }
-  body {
-    font-family: 'Iowan Old Style', 'Palatino Linotype', Palatino, Georgia, serif;
-    background: var(--papel);
-    color: var(--tinta);
-    max-width: 680px;
-    margin: 0 auto;
-    padding: 56px 24px 80px;
-    line-height: 1.6;
-  }
-  h1 {
-    font-weight: 400;
-    font-style: italic;
-    font-size: 1.9rem;
-    border-bottom: 1px solid var(--linea);
-    padding-bottom: 16px;
-    margin-bottom: 12px;
-  }
-  p.intro {
-    color: var(--tinta-suave);
-    font-size: 1.02rem;
-    margin-bottom: 40px;
-  }
-  h2 {
-    font-family: system-ui, sans-serif;
-    font-size: 1.05rem;
-    font-weight: 700;
-    margin-top: 36px;
-    margin-bottom: 10px;
-    display: flex;
-    align-items: center;
-    gap: 10px;
-  }
-  h2 .icono {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 26px; height: 26px;
-    border-radius: 50%;
-    background: var(--sello);
-    color: #f7ede0;
-    font-size: 0.85rem;
-    flex-shrink: 0;
-  }
-  .caja {
-    background: var(--papel-oscuro);
-    border: 1px solid var(--linea);
-    border-radius: 3px;
-    padding: 18px 22px;
-    margin-bottom: 8px;
-  }
-  .aviso-limite {
-    font-family: system-ui, sans-serif;
-    font-size: 0.85rem;
-    color: var(--sello-oscuro);
-    background: #f0dcd3;
-    border: 1px solid var(--sello);
-    border-radius: 3px;
-    padding: 16px 20px;
-    margin-top: 44px;
-  }
-  .volver {
-    display: inline-block;
-    margin-top: 40px;
-    font-family: system-ui, sans-serif;
-    font-size: 0.85rem;
-    color: var(--tinta-suave);
-    text-decoration: none;
-  }
+  :root{--papel:#F5EFE3;--papel-oscuro:#EDE3D0;--tinta:#302923;--tinta-suave:#6B5F4F;--linea:#D4C5AA;--sello:#955044;--sello-oscuro:#7D4037;--blanco-papel:#FBF8F1}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--papel);color:var(--tinta);font-family:'Iowan Old Style','Palatino Linotype',Palatino,Georgia,serif;line-height:1.65}
+  a{color:var(--tinta-suave)}
+  a:hover{color:var(--sello)}
+  button,input{font:inherit}
+  button:focus-visible,input:focus-visible,a:focus-visible{outline:2px solid var(--sello);outline-offset:3px}
+
+  body{max-width:760px;margin:0 auto;padding:58px 25px 80px}
+  .ceja{font-family:system-ui,sans-serif;font-size:.66rem;letter-spacing:.16em;text-transform:uppercase;color:var(--sello);margin-bottom:9px}
+  h1{font-size:2.25rem;font-weight:400;font-style:italic;line-height:1.2;margin:0 0 13px;padding-bottom:18px;border-bottom:1px solid var(--linea)}
+  .intro{font-size:1rem;color:var(--tinta-suave);margin:0 0 42px}
+  h2{font-size:1.08rem;font-weight:600;margin:31px 0 9px}
+  .caja{padding:0 0 18px;border-bottom:1px solid var(--linea);color:var(--tinta-suave)}
+  .caja p{margin:0;line-height:1.72}
+  .aviso-limite{margin-top:42px;padding:17px 0;border-top:1px solid var(--sello);border-bottom:1px solid var(--sello);font-size:.86rem;color:var(--tinta-suave)}
+  .volver{display:inline-block;margin-top:34px;font-family:system-ui,sans-serif;font-size:.76rem;text-decoration:none}
 </style>
 </head>
 <body>
 
+  <div class="ceja">Memoricorde · transparencia</div>
   <h1>Privacidad y medidas de seguridad</h1>
   <p class="intro">
     Aquí explicamos, con honestidad y sin letra pequeña, qué hacemos para
@@ -94,7 +34,7 @@
     <strong>no</strong> garantizan — preferimos que lo sepas de antemano.
   </p>
 
-  <h2><span class="icono">1</span> Contraseñas propias, cuentas separadas</h2>
+  <h2>Contraseñas propias, cuentas separadas</h2>
   <div class="caja">
     <p>
       Cada persona tiene su propio usuario y contraseña. Las contraseñas no
@@ -107,7 +47,7 @@
     </p>
   </div>
 
-  <h2><span class="icono">2</span> La base de datos está cifrada</h2>
+  <h2>La base de datos está cifrada</h2>
   <div class="caja">
     <p>
       Toda la información — conversaciones, resúmenes, cuestionario,
@@ -118,7 +58,7 @@
     </p>
   </div>
 
-  <h2><span class="icono">3</span> Tú decides qué hacer con tus datos</h2>
+  <h2>Tú decides qué hacer con tus datos</h2>
   <div class="caja">
     <p>
       Desde tu cuenta puedes, en cualquier momento: <strong>descargar</strong>
@@ -129,7 +69,7 @@
     </p>
   </div>
 
-  <h2><span class="icono">4</span> Copias de seguridad</h2>
+  <h2>Copias de seguridad</h2>
   <div class="caja">
     <p>
       Además de tu propia copia manual, el sistema genera automáticamente
@@ -138,7 +78,7 @@
     </p>
   </div>
 
-  <h2><span class="icono">5</span> Dictado por voz</h2>
+  <h2>Dictado por voz</h2>
   <div class="caja">
     <p>
       Si tu navegador lo permite, puedes usar el botón de dictado para
@@ -151,7 +91,7 @@
     </p>
   </div>
 
-  <h2><span class="icono">6</span> Un límite que preferimos contarte con claridad</h2>
+  <h2>Un límite que preferimos contarte con claridad</h2>
   <div class="caja">
     <p>
       El cifrado protege tus datos frente a accesos externos no autorizados.

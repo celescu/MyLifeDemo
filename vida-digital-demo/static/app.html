@@ -5,432 +5,408 @@
 <title>Mi vida — demo</title>
 <style>
   :root {
-    --papel: #f2e9d8;
-    --papel-oscuro: #e8dcc4;
-    --tinta: #3a3128;
-    --tinta-suave: #6b5f4f;
-    --linea: #cdbd9f;
-    --sello: #a8574a;
-    --sello-oscuro: #8c453a;
+    --papel: #F5EFE3;
+    --papel-oscuro: #EDE3D0;
+    --tinta: #302923;
+    --tinta-suave: #6B5F4F;
+    --linea: #D4C5AA;
+    --sello: #955044;
+    --sello-oscuro: #7D4037;
+    --blanco-papel: #FBF8F1;
   }
-
   * { box-sizing: border-box; }
-
+  html { scroll-behavior: smooth; }
   body {
+    margin: 0;
+    min-height: 100vh;
+    background: var(--papel);
+    color: var(--tinta);
     font-family: 'Iowan Old Style', 'Palatino Linotype', Palatino, Georgia, serif;
-    background: var(--papel);
-    background-image:
-      radial-gradient(rgba(139, 115, 85, 0.05) 1px, transparent 1px);
-    background-size: 3px 3px;
-    color: var(--tinta);
-    max-width: 640px;
-    margin: 48px auto;
-    padding: 0 20px 90px;
+    line-height: 1.6;
+  }
+  button, input, textarea, select { font: inherit; }
+  button, a { -webkit-tap-highlight-color: transparent; }
+  button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visible {
+    outline: 2px solid var(--sello);
+    outline-offset: 3px;
   }
 
-  h2 {
-    font-weight: 400;
-    font-style: italic;
-    font-size: 1.5rem;
-    color: var(--tinta-suave);
-    border-bottom: 1px solid var(--linea);
-    padding-bottom: 14px;
-    margin-bottom: 24px;
-    letter-spacing: 0.02em;
-  }
-
-  #chat {
-    background: var(--papel-oscuro);
-    border: 1px solid var(--linea);
-    border-radius: 2px;
-    box-shadow: inset 0 1px 3px rgba(90, 70, 40, 0.15);
-    padding: 20px 22px;
-    min-height: 280px;
-    margin-bottom: 16px;
-  }
-
-  .msg { margin-bottom: 16px; line-height: 1.55; font-size: 1.02rem; }
-  .msg .etiqueta {
-    display: block;
-    font-family: system-ui, sans-serif;
-    font-size: 0.7rem;
-    color: var(--tinta-suave);
-    margin-bottom: 3px;
-  }
-  .user { color: var(--tinta); }
-  .ia { color: var(--tinta-suave); font-style: italic; }
-
-  textarea {
-    width: 100%;
-    font-family: inherit;
-    font-size: 1rem;
-    background: var(--papel-oscuro);
-    border: 1px solid var(--linea);
-    border-radius: 2px;
-    padding: 10px 12px;
-    color: var(--tinta);
-    resize: vertical;
-  }
-  textarea:focus { outline: 2px solid var(--sello); outline-offset: 1px; }
-
-  .acciones { margin-top: 10px; display: flex; flex-wrap: wrap; gap: 8px; }
-
-  .menu-desplegable { position: relative; display: inline-block; }
-  .lista-menu {
-    display: none;
-    position: absolute;
-    top: calc(100% + 6px);
-    left: 0;
-    z-index: 20;
-    flex-direction: column;
-    gap: 4px;
-    min-width: 230px;
-    padding: 8px;
-    background: var(--papel);
-    border: 1px solid var(--linea);
-    border-radius: 4px;
-    box-shadow: 0 4px 14px rgba(90, 70, 40, 0.18);
-  }
-  .lista-menu.abierta { display: flex; }
-  .lista-menu button { width: 100%; text-align: left; padding: 11px 14px; }
-
-  button {
-    font-family: system-ui, sans-serif;
-    font-size: 0.85rem;
-    padding: 9px 16px;
-    border-radius: 3px;
-    border: 1px solid var(--linea);
-    background: var(--papel);
-    color: var(--tinta-suave);
-    cursor: pointer;
-  }
-  button:hover { background: var(--papel-oscuro); }
-  button:disabled { opacity: 0.55; cursor: not-allowed; }
-  button:disabled:hover { background: var(--papel); }
-
-  .escribiendo {
+  .app-shell { max-width: 1120px; margin: 0 auto; padding: 0 28px 90px; }
+  .barra-superior {
+    min-height: 76px;
     display: flex;
     align-items: center;
-    gap: 8px;
+    justify-content: space-between;
+    gap: 24px;
+    border-bottom: 1px solid var(--linea);
+  }
+  .marca-app { color: var(--tinta); text-decoration: none; white-space: nowrap; }
+  .marca-app .marca-pequena {
+    display: block;
     font-family: system-ui, sans-serif;
-    font-size: 0.8rem;
+    font-size: .64rem;
+    letter-spacing: .16em;
+    text-transform: uppercase;
+    color: var(--sello);
+    margin-bottom: 1px;
+  }
+  .marca-app .marca-grande { font-size: 1.18rem; font-style: italic; }
+  .navegacion { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+  .nav-boton, .nav-enlace {
+    border: 0;
+    background: transparent;
     color: var(--tinta-suave);
-    font-style: italic;
+    padding: 8px 10px;
+    font-family: system-ui, sans-serif;
+    font-size: .76rem;
+    letter-spacing: .02em;
+    cursor: pointer;
+    text-decoration: none;
   }
-  .punto {
-    width: 6px; height: 6px;
-    border-radius: 50%;
-    background: var(--tinta-suave);
-    animation: parpadeo 1.1s infinite ease-in-out;
+  .nav-boton:hover, .nav-enlace:hover { color: var(--tinta); background: transparent; }
+  .nav-boton.principal { color: var(--tinta); font-weight: 650; }
+  .cuenta-nav { position: relative; }
+  .menu-cuenta {
+    display: none;
+    position: absolute;
+    right: 0;
+    top: calc(100% + 8px);
+    z-index: 50;
+    min-width: 210px;
+    padding: 8px;
+    background: var(--blanco-papel);
+    border: 1px solid var(--linea);
+    box-shadow: 0 10px 30px rgba(48,41,35,.10);
   }
-  .punto:nth-child(2) { animation-delay: 0.15s; }
-  .punto:nth-child(3) { animation-delay: 0.3s; }
-  @keyframes parpadeo {
-    0%, 80%, 100% { opacity: 0.25; }
-    40% { opacity: 1; }
-  }
+  .menu-cuenta.abierto { display: block; }
+  .menu-cuenta button { width: 100%; text-align: left; border: 0; background: transparent; padding: 10px 11px; color: var(--tinta-suave); cursor: pointer; }
+  .menu-cuenta button:hover { background: var(--papel-oscuro); color: var(--tinta); }
+  .separador-menu { height: 1px; background: var(--linea); margin: 6px 4px; }
 
-  #btn-enviar {
-    background: var(--sello);
-    border-color: var(--sello-oscuro);
-    color: #f7ede0;
-    font-weight: 600;
-    letter-spacing: 0.02em;
+  .contenido { padding-top: 46px; }
+  .cabecera-seccion { margin-bottom: 34px; }
+  .ceja {
+    font-family: system-ui, sans-serif;
+    font-size: .66rem;
+    letter-spacing: .15em;
+    text-transform: uppercase;
+    color: var(--sello);
+    margin-bottom: 8px;
   }
-  #btn-enviar:hover { background: var(--sello-oscuro); }
+  h1, h2 { font-weight: 400; }
+  .titulo-seccion { margin: 0; font-size: clamp(1.8rem, 3vw, 2.5rem); line-height: 1.15; }
+  .subtitulo-seccion { margin: 9px 0 0; color: var(--tinta-suave); max-width: 650px; }
 
-  #btn-dictado.escuchando {
-    background: var(--sello);
-    color: #f7ede0;
-    border-color: var(--sello-oscuro);
-    animation: parpadeo 1.4s infinite ease-in-out;
+  .entrevista-cabecera { max-width: 760px; margin: 0 auto 26px; }
+  .entrevista-meta { display: flex; justify-content: space-between; gap: 12px; align-items: baseline; margin-bottom: 8px; }
+  .entrevista-meta .fecha { font-family: system-ui, sans-serif; font-size: .68rem; letter-spacing: .12em; text-transform: uppercase; color: var(--sello); }
+  .entrevista-meta .usuario { font-family: system-ui, sans-serif; font-size: .7rem; color: var(--tinta-suave); }
+  .entrevista-titulo { font-size: clamp(1.75rem, 4vw, 2.5rem); margin: 0; font-style: italic; }
+  .regla { height: 1px; background: var(--linea); margin-top: 18px; }
+
+  #chat {
+    max-width: 760px;
+    margin: 0 auto 18px;
+    padding: 12px 0 4px;
+    min-height: 290px;
   }
+  .msg { max-width: 690px; margin-bottom: 28px; line-height: 1.7; font-size: 1.04rem; }
+  .msg .etiqueta {
+    display: block;
+    margin-bottom: 5px;
+    font-family: system-ui, sans-serif;
+    font-size: .64rem;
+    letter-spacing: .11em;
+    text-transform: uppercase;
+    color: var(--sello);
+  }
+  .msg.user { margin-left: auto; text-align: right; }
+  .msg.user .etiqueta { color: var(--tinta-suave); }
+  .msg.ia { font-size: 1.12rem; }
+
+  .escribiendo { display: flex; align-items: center; gap: 7px; font-family: system-ui, sans-serif; font-size: .76rem; color: var(--tinta-suave); font-style: italic; }
+  .punto { width: 5px; height: 5px; border-radius: 50%; background: var(--tinta-suave); animation: parpadeo 1.1s infinite ease-in-out; }
+  .punto:nth-child(2) { animation-delay: .15s; }
+  .punto:nth-child(3) { animation-delay: .3s; }
+  @keyframes parpadeo { 0%,80%,100% { opacity:.25; } 40% { opacity:1; } }
+
+  .editor-respuesta { max-width: 760px; margin: 26px auto 0; }
+  textarea {
+    width: 100%; min-height: 118px; resize: vertical;
+    padding: 14px 0 12px;
+    border: 0; border-bottom: 1px solid var(--linea); border-radius: 0;
+    background: transparent; color: var(--tinta);
+    font-size: 1.02rem; line-height: 1.65;
+  }
+  textarea::placeholder { color: #8b806f; }
+  textarea:focus { outline: none; border-bottom-color: var(--sello); }
+  .acciones-principales { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin-top: 12px; }
+  .acciones-izquierda, .acciones-derecha { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .boton-principal, .boton-secundario, .boton-texto {
+    border-radius: 0; cursor: pointer; font-family: system-ui, sans-serif; font-size: .78rem;
+  }
+  .boton-principal { padding: 10px 20px; background: var(--sello); border: 1px solid var(--sello); color: #FBF3E7; font-weight: 650; }
+  .boton-principal:hover { background: var(--sello-oscuro); border-color: var(--sello-oscuro); }
+  .boton-secundario { padding: 9px 13px; background: transparent; border: 1px solid var(--linea); color: var(--tinta-suave); }
+  .boton-secundario:hover { border-color: var(--tinta-suave); color: var(--tinta); background: transparent; }
+  .boton-texto { padding: 7px 0; background: transparent; border: 0; color: var(--tinta-suave); }
+  .boton-texto:hover { color: var(--sello); background: transparent; }
+  button:disabled { opacity: .55; cursor: not-allowed; }
+  #btn-dictado.escuchando { background: var(--sello); color: #FBF3E7; border-color: var(--sello); animation: parpadeo 1.4s infinite ease-in-out; }
+  #fila-dictado { font-family: system-ui, sans-serif; }
+
+  #reloj-sesion { position: fixed; right: 22px; bottom: 18px; font-family: system-ui, sans-serif; font-size: .7rem; color: var(--tinta-suave); background: var(--blanco-papel); border: 1px solid var(--linea); padding: 7px 12px; z-index: 1000; display: none; }
+  #reloj-sesion .punto-vivo { display:inline-block; width:5px; height:5px; border-radius:50%; background:var(--sello); margin-right:6px; animation:parpadeo 2s infinite ease-in-out; }
+
+  .bloque-vista { max-width: 860px; margin: 0 auto; }
+  .vista-barra { display:flex; align-items:baseline; justify-content:space-between; gap:18px; margin-bottom: 30px; padding-bottom: 14px; border-bottom:1px solid var(--linea); }
+  .vista-barra h2 { margin:0; font-size:2rem; font-style:italic; }
+  .vista-barra .volver { font-family:system-ui,sans-serif; font-size:.73rem; color:var(--tinta-suave); text-decoration:none; }
+  .vista-barra .volver:hover { color:var(--sello); }
 
   #memoria, #transcripcion {
-    white-space: pre-wrap;
-    background: var(--papel-oscuro);
-    border: 1px solid var(--linea);
-    padding: 14px 16px;
-    border-radius: 2px;
-    font-family: 'Courier New', monospace;
-    font-size: 0.8rem;
-    color: var(--tinta-suave);
-    margin-top: 16px;
-    display: none;
+    white-space: pre-wrap; max-width:760px; margin:24px auto 0; padding:18px 0;
+    border-top:1px solid var(--linea); border-bottom:1px solid var(--linea);
+    background:transparent; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size:.78rem; color:var(--tinta-suave); display:none; overflow:auto;
   }
+  #lista-sesiones, #lista-aportaciones { max-width:760px; margin:24px auto 0; }
+  .sesion-item { padding:16px 0; border-top:1px solid var(--linea); cursor:pointer; color:var(--tinta); }
+  .sesion-item:hover { background: rgba(237,227,208,.35); }
+  .sesion-item.activa { background: transparent; border-color:var(--sello); }
+  .sesion-cabecera { display:block; font-size:1rem; margin-bottom:3px; }
+  .sesion-subtitulo { display:block; font-family:system-ui,sans-serif; font-size:.68rem; color:var(--tinta-suave); }
 
-  .sesion-item {
-    font-family: system-ui, sans-serif;
-    font-size: 0.85rem;
-    padding: 10px 12px;
-    border: 1px solid var(--linea);
-    border-radius: 2px;
-    margin-top: 6px;
-    cursor: pointer;
-    color: var(--tinta-suave);
-    background: var(--papel);
-  }
-  .pregunta-cuestionario {
-    margin-bottom: 22px;
-    padding-bottom: 18px;
-    border-bottom: 1px solid var(--linea);
-  }
-  .pregunta-cuestionario p.enunciado {
-    font-size: 1rem;
-    margin-bottom: 10px;
-  }
-  .opcion-cuestionario {
-    display: block;
-    font-family: system-ui, sans-serif;
-    font-size: 0.9rem;
-    padding: 8px 10px;
-    margin-bottom: 6px;
-    border: 1px solid var(--linea);
-    border-radius: 3px;
-    cursor: pointer;
-    background: var(--papel-oscuro);
-  }
-  .opcion-cuestionario:hover { background: #ddcfab; }
-  .opcion-cuestionario.seleccionada {
-    background: var(--sello);
-    color: #f7ede0;
-    border-color: var(--sello-oscuro);
-  }
-  .opcion-cuestionario input { margin-right: 8px; }
+  .cuestionario { max-width:760px; margin:0 auto; }
+  .pregunta-cuestionario { margin-bottom:28px; padding-bottom:22px; border-bottom:1px solid var(--linea); }
+  .pregunta-cuestionario p.enunciado { font-size:1.02rem; margin-bottom:12px; }
+  .opcion-cuestionario { display:block; padding:9px 0; font-family:system-ui,sans-serif; font-size:.86rem; cursor:pointer; color:var(--tinta-suave); }
+  .opcion-cuestionario:hover { color:var(--tinta); background:transparent; }
+  .opcion-cuestionario.seleccionada { color:var(--sello-oscuro); font-weight:600; }
+  .opcion-cuestionario input { margin-right:9px; accent-color:var(--sello); }
 
-  button.activo {
-    background: var(--sello);
-    color: #f7ede0;
-    border-color: var(--sello-oscuro);
-  }
-  button.activo:hover { background: var(--sello-oscuro); }
+  .tarjetas-metricas { display:flex; flex-wrap:wrap; gap:14px; margin-bottom:24px; }
+  .tarjeta-metrica { flex:1 1 140px; background:transparent; border-top:1px solid var(--linea); padding:12px 0; font-family:system-ui,sans-serif; }
+  .tarjeta-metrica .valor { display:block; font-size:1.25rem; color:var(--sello-oscuro); }
+  .tarjeta-metrica .etiqueta { font-size:.7rem; color:var(--tinta-suave); }
+  .tabla-metricas { width:100%; border-collapse:collapse; font-family:system-ui,sans-serif; font-size:.75rem; }
+  .tabla-metricas th,.tabla-metricas td { text-align:left; padding:8px 6px; border-bottom:1px solid var(--linea); }
+  .tabla-metricas th { color:var(--tinta-suave); font-weight:600; }
 
-  .sesion-item.activa {
-    background: #ddb9a9;
-    border-color: var(--sello-oscuro);
-  }
-
-  #reloj-sesion {
-    position: fixed;
-    left: 50%;
-    bottom: 18px;
-    transform: translateX(-50%);
-    font-family: system-ui, sans-serif;
-    font-size: 0.8rem;
-    color: var(--tinta-suave);
-    background: var(--papel-oscuro);
-    border: 1px solid var(--linea);
-    padding: 8px 18px;
-    border-radius: 20px;
-    box-shadow: 0 2px 8px rgba(58, 49, 40, 0.2);
-    z-index: 1000;
-    display: none;
-  }
-  #reloj-sesion .punto-vivo {
-    display: inline-block;
-    width: 6px; height: 6px;
-    border-radius: 50%;
-    background: var(--sello);
-    margin-right: 6px;
-    animation: parpadeo 2s infinite ease-in-out;
-  }
-
-  .sesion-cabecera {
-    font-weight: 600;
-    display: block;
-    margin-bottom: 2px;
-  }
-  .sesion-subtitulo {
-    font-size: 0.78rem;
-    opacity: 0.85;
-  }
-
-  .tarjetas-metricas {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 12px;
-    margin-bottom: 24px;
-  }
-  .tarjeta-metrica {
-    flex: 1 1 130px;
-    background: var(--papel-oscuro);
-    border: 1px solid var(--linea);
-    border-radius: 3px;
-    padding: 12px 14px;
-    font-family: system-ui, sans-serif;
-  }
-  .tarjeta-metrica .valor {
-    font-size: 1.3rem;
-    font-weight: 600;
-    color: var(--sello-oscuro);
-    display: block;
-  }
-  .tarjeta-metrica .etiqueta {
-    font-size: 0.72rem;
-    color: var(--tinta-suave);
-  }
-
-  .tabla-metricas {
-    width: 100%;
-    border-collapse: collapse;
-    font-family: system-ui, sans-serif;
-    font-size: 0.78rem;
-  }
-  .tabla-metricas th, .tabla-metricas td {
-    text-align: left;
-    padding: 6px 8px;
-    border-bottom: 1px solid var(--linea);
-  }
-  .tabla-metricas th { color: var(--tinta-suave); font-weight: 600; }
-
+  #vista-autobiografia .libro-marco { max-width:760px; margin:0 auto; }
   #vista-autobiografia .pagina-libro {
-    background: var(--papel-oscuro);
-    border: 1px solid var(--linea);
-    border-radius: 2px;
-    padding: 36px 40px;
-    box-shadow: inset 0 1px 3px rgba(90, 70, 40, 0.15);
-    line-height: 1.75;
-    font-size: 1.05rem;
+    background: var(--blanco-papel); border:1px solid var(--linea); padding:58px clamp(30px,7vw,74px);
+    line-height:1.85; font-size:1.06rem; box-shadow:0 14px 40px rgba(48,41,35,.06);
   }
-  .pagina-libro h2 {
-    font-size: 1.3rem;
-    border-bottom: none;
-    margin-top: 32px;
-    margin-bottom: 14px;
-    padding-bottom: 0;
-  }
-  .pagina-libro h2:first-child { margin-top: 0; }
-  .pagina-libro p { margin: 0 0 16px; }
-  .aviso-vacio {
-    font-family: system-ui, sans-serif;
-    font-size: 0.88rem;
-    color: var(--tinta-suave);
-    margin-bottom: 20px;
-  }
-  .fecha-generacion {
-    font-family: system-ui, sans-serif;
-    font-size: 0.72rem;
-    color: var(--tinta-suave);
-    margin-bottom: 12px;
+  .pagina-libro:before { content:'MI VIDA'; display:block; font-family:system-ui,sans-serif; font-size:.65rem; letter-spacing:.18em; color:var(--sello); margin-bottom:32px; }
+  .pagina-libro h2 { font-size:1.55rem; font-style:italic; border:0; margin:36px 0 15px; padding:0; }
+  .pagina-libro h2:first-child { margin-top:0; }
+  .pagina-libro p { margin:0 0 18px; }
+  .fecha-generacion { max-width:760px; margin:0 auto 14px; font-family:system-ui,sans-serif; font-size:.68rem; color:var(--tinta-suave); }
+  .aviso-vacio { color:var(--tinta-suave); margin:0 0 24px; }
+
+  .seccion-datos { border-top:1px solid var(--linea); padding:22px 0; }
+  .seccion-datos h3 { margin:0 0 7px; font-size:1.05rem; font-weight:400; }
+  .seccion-datos p { margin:0 0 10px; color:var(--tinta-suave); font-family:system-ui,sans-serif; font-size:.78rem; }
+  .seccion-peligro { border-top:1px solid #B98A7F; margin-top:12px; padding-top:22px; }
+  .seccion-peligro h3 { color:var(--sello-oscuro); }
+  input[type="password"], input[type="file"] { font-family:system-ui,sans-serif; font-size:.8rem; }
+  input[type="password"] { max-width:280px; padding:9px 10px; border:1px solid var(--linea); background:transparent; color:var(--tinta); }
+
+  .pie-privacidad { max-width:760px; margin:42px auto 0; padding-top:16px; border-top:1px solid var(--linea); font-family:system-ui,sans-serif; font-size:.7rem; color:var(--tinta-suave); }
+  .pie-privacidad a { color:inherit; }
+
+  .sr-only { position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0; }
+
+  @media (max-width: 760px) {
+    .app-shell { padding:0 17px 80px; }
+    .barra-superior { min-height:68px; align-items:flex-start; padding-top:13px; flex-direction:column; gap:7px; }
+    .navegacion { width:100%; overflow-x:auto; flex-wrap:nowrap; padding-bottom:7px; }
+    .nav-boton,.nav-enlace { white-space:nowrap; padding:6px 8px; }
+    .contenido { padding-top:30px; }
+    .entrevista-meta { align-items:flex-start; flex-direction:column; gap:2px; }
+    .acciones-principales { align-items:stretch; flex-direction:column; }
+    .acciones-izquierda,.acciones-derecha { width:100%; }
+    .acciones-derecha { justify-content:flex-end; }
+    .boton-principal { flex:1; }
+    #reloj-sesion { right:10px; bottom:10px; }
+    #vista-autobiografia .pagina-libro { padding:38px 25px; font-size:1rem; }
+    .vista-barra { align-items:flex-start; flex-direction:column; gap:8px; }
   }
 </style>
 </head>
 <body>
-
-<div id="vista-entrevista">
-  <div style="display:flex; justify-content:space-between; align-items:baseline; flex-wrap:wrap; gap:8px;">
-    <h2 style="margin-bottom:0; border-bottom:none; padding-bottom:0; flex:1;">Mi vida — un archivo de recuerdos</h2>
-    <span id="usuario-conectado" style="font-family: system-ui, sans-serif; font-size: 0.75rem; color: var(--tinta-suave);"></span>
-    <a href="/seguridad.html" style="font-family: system-ui, sans-serif; font-size: 0.75rem; color: var(--tinta-suave);">Privacidad y seguridad</a>
-  </div>
-  <div style="border-bottom: 1px solid var(--linea); padding-bottom: 14px; margin-bottom: 24px;"></div>
-  <div id="reloj-sesion"><span class="punto-vivo"></span><span id="reloj-texto">Sesión en curso: 00:00</span></div>
-  <div id="aviso-aportacion" style="display:none; margin-bottom:10px; padding:10px 14px; background:var(--papel-oscuro); border:1px solid var(--linea); border-radius:3px; font-family: system-ui, sans-serif; font-size:0.85rem;"></div>
-  <div id="aviso-reconstruccion" style="display:none; margin-bottom:10px; padding:10px 14px; background:var(--papel-oscuro); border:1px solid var(--linea); border-radius:3px; font-family: system-ui, sans-serif; font-size:0.85rem;"></div>
-  <div id="lista-aportaciones"></div>
-  <div id="chat"></div>
-  <textarea id="input" rows="3" placeholder="Escribe tu respuesta..."></textarea>
-  <div id="fila-dictado" style="display:none; align-items:center; gap:10px; margin-top:6px; margin-bottom:4px;">
-    <button id="btn-dictado" onclick="alternarDictado()" type="button">🎤 Dictar por voz</button>
-    <span id="aviso-dictado-voz" style="font-family: system-ui, sans-serif; font-size: 0.72rem; color: var(--tinta-suave);">El dictado usa el reconocimiento de voz de tu navegador; el audio se procesa fuera de esta aplicación.</span>
-  </div>
-  <div class="acciones">
-    <button id="btn-enviar" onclick="enviar()">Enviar</button>
-    <button id="btn-cerrar-sesion" onclick="cerrarSesion(event)">Cerrar sesión de hoy</button>
-    <div class="menu-desplegable">
-      <button id="btn-menu" onclick="alternarMenu(event)">☰ Menú</button>
-      <div id="lista-menu" class="lista-menu">
-        <button onclick="verMemoria(event); cerrarMenu();">Ver memoria acumulada</button>
-        <button onclick="verSesiones(event); cerrarMenu();">Ver sesiones guardadas</button>
-        <button onclick="iniciarAportacion(); cerrarMenu();">👪 Aportación de un familiar</button>
-        <button onclick="verAportaciones(event); cerrarMenu();">Ver aportaciones guardadas</button>
-        <button onclick="abrirCuestionario(); cerrarMenu();">Cuestionario de autopercepción</button>
-        <button onclick="abrirMetricas(); cerrarMenu();">Métricas de uso</button>
-        <button onclick="abrirAutobiografia(); cerrarMenu();">Mi autobiografía</button>
-        <button onclick="abrirMisDatos(); cerrarMenu();">Mis datos</button>
-        <button id="btn-reconstruir-memoria" onclick="reconstruirMemoria(); cerrarMenu();">🛠️ Reconstruir memoria desde sesiones antiguas</button>
-        <button onclick="salir()">Salir</button>
+<div class="app-shell">
+  <header class="barra-superior">
+    <a class="marca-app" href="#" onclick="mostrarEntrevista(); return false;">
+      <span class="marca-pequena">Memoricorde</span>
+      <span class="marca-grande">Mi vida</span>
+    </a>
+    <nav class="navegacion" aria-label="Navegación principal">
+      <button class="nav-boton principal" onclick="mostrarEntrevista()">Conversar</button>
+      <button id="nav-recuerdos" class="nav-boton" onclick="mostrarRecuerdos()">Recuerdos</button>
+      <button id="nav-conversaciones" class="nav-boton" onclick="mostrarConversaciones()">Mis conversaciones</button>
+      <button class="nav-boton" onclick="abrirAutobiografia()">Autobiografía</button>
+      <div class="cuenta-nav">
+        <button id="btn-familia" class="nav-boton" onclick="alternarFamilia(event)">Familia</button>
+        <div id="menu-familia" class="menu-cuenta">
+          <button onclick="iniciarAportacion(); cerrarFamilia();">Invitar a alguien a aportar un recuerdo</button>
+          <button id="nav-aportaciones" onclick="mostrarAportaciones(); cerrarFamilia();">Recuerdos de otras personas</button>
+        </div>
       </div>
-    </div>
-  </div>
-  <pre id="memoria"></pre>
-  <div id="lista-sesiones"></div>
-  <pre id="transcripcion"></pre>
-</div>
+      <div class="cuenta-nav">
+        <button id="btn-cuenta" class="nav-boton" onclick="alternarCuenta(event)">Cuenta</button>
+        <div id="menu-cuenta" class="menu-cuenta">
+          <button onclick="abrirCuestionario(); cerrarCuenta();">Cómo me veo</button>
+          <button onclick="abrirMisDatos(); cerrarCuenta();">Privacidad y datos</button>
+          <a class="nav-enlace" href="/seguridad.html" style="display:block;padding:10px 11px;">Privacidad y seguridad</a>
+          <div class="separador-menu"></div>
+          <button onclick="salir(); cerrarCuenta();">Cerrar sesión</button>
+        </div>
+      </div>
+    </nav>
+  </header>
 
-<div id="vista-cuestionario" style="display: none;">
-  <h2>Cuestionario de autopercepción</h2>
-  <p style="font-family: system-ui, sans-serif; font-size: 0.85rem; color: var(--tinta-suave); margin-bottom: 20px;">
-    Así te describes tú mismo — no es un diagnóstico ni una evaluación, solo tu propia
-    forma de verte. Tus respuestas ayudarán a la entrevistadora a conocerte mejor.
-  </p>
-  <div id="preguntas-cuestionario"></div>
-  <div class="acciones">
-    <button id="btn-guardar-cuestionario" onclick="guardarCuestionario()">Guardar respuestas</button>
-    <button onclick="volverASesiones()">Volver a sesiones</button>
-  </div>
-</div>
+  <main class="contenido">
+    <section id="vista-entrevista">
+      <div class="entrevista-cabecera">
+        <div class="entrevista-meta">
+          <span class="fecha">Cuaderno de vida</span>
+          <span id="usuario-conectado" class="usuario"></span>
+        </div>
+        <h1 class="entrevista-titulo">Una conversación más de tu historia</h1>
+        <div class="regla"></div>
+      </div>
 
-<div id="vista-metricas" style="display: none;">
-  <h2>Métricas de uso</h2>
-  <div id="tarjetas-metricas-totales" class="tarjetas-metricas"></div>
-  <div id="grafico-metricas" style="margin-bottom: 24px;"></div>
-  <div id="tabla-metricas-sesiones"></div>
-  <div class="acciones">
-    <button onclick="volverASesionesDesdeMetricas()">Volver a sesiones</button>
-  </div>
-</div>
+      <div id="reloj-sesion"><span class="punto-vivo"></span><span id="reloj-texto">Conversación en curso: 00:00</span></div>
+      <div id="aviso-aportacion" style="display:none; max-width:760px; margin:0 auto 16px; padding:10px 0; border-bottom:1px solid var(--linea); font-family:system-ui,sans-serif; font-size:.78rem;"></div>
+      <div id="lista-aportaciones"></div>
+      <div id="chat"></div>
 
-<div id="vista-autobiografia" style="display: none;">
-  <h2>Mi autobiografía</h2>
-  <div id="fecha-autobiografia" class="fecha-generacion"></div>
-  <div id="contenido-autobiografia"></div>
-  <div class="acciones">
-    <button id="btn-generar-autobiografia" onclick="generarAutobiografia()">Generar / actualizar autobiografía</button>
-    <button onclick="volverASesionesDesdeAutobiografia()">Volver a sesiones</button>
-  </div>
-</div>
+      <div class="editor-respuesta">
+        <label class="sr-only" for="input">Tu respuesta</label>
+        <textarea id="input" rows="3" placeholder="Escribe lo que quieras recordar..."></textarea>
+        <div id="fila-dictado" style="display:none; align-items:center; gap:10px; margin-top:7px; margin-bottom:4px;">
+          <button id="btn-dictado" class="boton-secundario" onclick="alternarDictado()" type="button">🎤 Dictar</button>
+          <span id="aviso-dictado-voz" style="font-family:system-ui,sans-serif;font-size:.68rem;color:var(--tinta-suave);">El dictado usa el reconocimiento de voz de tu navegador.</span>
+        </div>
+        <div class="acciones-principales">
+          <div class="acciones-izquierda">
+            <button id="btn-enviar" class="boton-principal" onclick="enviar()">Continuar</button>
+            <button id="btn-cerrar-sesion" class="boton-texto" onclick="cerrarSesion(event)">Terminar por hoy</button>
+          </div>
+          <div class="acciones-derecha">
+            <button class="boton-texto" onclick="mostrarConversaciones()">Ver conversaciones</button>
+          </div>
+        </div>
+      </div>
 
-<div id="vista-mis-datos" style="display: none;">
-  <h2>Mis datos</h2>
-  <p style="font-family: system-ui, sans-serif; font-size: 0.85rem; color: var(--tinta-suave); margin-bottom: 20px;">
-    Aquí puedes descargarte todo lo que has contado, restaurarlo desde una
-    copia anterior, o borrarlo por completo de este servidor. Restaurar o
-    borrar requiere que vuelvas a escribir tu contraseña, como confirmación.
-  </p>
+      <pre id="memoria"></pre>
+      <div id="lista-sesiones"></div>
+      <pre id="transcripcion"></pre>
+    </section>
 
-  <div style="margin-bottom:28px;">
-    <p style="font-family: system-ui, sans-serif; font-weight:600; font-size:0.9rem; margin-bottom:6px;">Exportar</p>
-    <button onclick="exportarMisDatos()">Descargar mi copia de seguridad</button>
-  </div>
+    <section id="vista-cuestionario" class="bloque-vista" style="display:none;">
+      <div class="vista-barra"><h2>Cómo me veo</h2><button class="boton-texto" onclick="mostrarEntrevista()">Volver a conversar</button></div>
+      <div class="cuestionario">
+        <p class="subtitulo-seccion" style="margin-bottom:28px;">Una reflexión personal, no un diagnóstico. Tus respuestas ayudan a la entrevistadora a conocerte mejor.</p>
+        <div id="preguntas-cuestionario"></div>
+        <div class="acciones-principales"><button id="btn-guardar-cuestionario" class="boton-principal" onclick="guardarCuestionario()">Guardar respuestas</button></div>
+      </div>
+    </section>
 
-  <div style="margin-bottom:28px;">
-    <p style="font-family: system-ui, sans-serif; font-weight:600; font-size:0.9rem; margin-bottom:6px;">Restaurar</p>
-    <p style="font-family: system-ui, sans-serif; font-size: 0.78rem; color: var(--tinta-suave); margin-bottom:8px;">
-      ⚠️ Sustituye por completo tus datos actuales por los del archivo que subas.
-    </p>
-    <input type="file" id="archivo-mis-datos" accept=".json" style="margin-bottom:8px; display:block;">
-    <input type="password" id="password-restaurar-mios" placeholder="Tu contraseña" style="margin-bottom:8px; display:block; max-width:240px; font-family: system-ui, sans-serif; padding:8px; border:1px solid var(--linea); border-radius:2px; background:var(--papel-oscuro); color:var(--tinta);">
-    <button onclick="restaurarMisDatos()">Restaurar mis datos</button>
-  </div>
+    <section id="vista-metricas" class="bloque-vista" style="display:none;">
+      <div class="vista-barra"><h2>Métricas de uso</h2><button class="boton-texto" onclick="mostrarEntrevista()">Volver</button></div>
+      <div id="tarjetas-metricas-totales" class="tarjetas-metricas"></div>
+      <div id="grafico-metricas" style="margin-bottom:24px;"></div>
+      <div id="tabla-metricas-sesiones"></div>
+    </section>
 
-  <div style="margin-bottom:28px;">
-    <p style="font-family: system-ui, sans-serif; font-weight:600; font-size:0.9rem; margin-bottom:6px; color: var(--sello-oscuro);">Borrar</p>
-    <p style="font-family: system-ui, sans-serif; font-size: 0.78rem; color: var(--tinta-suave); margin-bottom:8px;">
-      ⚠️ Borra permanentemente todas tus conversaciones, memoria, cuestionario y autobiografía. Tu cuenta seguirá existiendo, vacía.
-    </p>
-    <input type="password" id="password-borrar-mios" placeholder="Tu contraseña" style="margin-bottom:8px; display:block; max-width:240px; font-family: system-ui, sans-serif; padding:8px; border:1px solid var(--linea); border-radius:2px; background:var(--papel-oscuro); color:var(--tinta);">
-    <button onclick="borrarMisDatos()">Borrar todos mis datos</button>
-  </div>
+    <section id="vista-autobiografia" class="bloque-vista" style="display:none;">
+      <div class="vista-barra"><h2>Mi autobiografía</h2><button class="boton-texto" onclick="mostrarEntrevista()">Volver a conversar</button></div>
+      <div id="fecha-autobiografia" class="fecha-generacion"></div>
+      <div class="libro-marco" id="contenido-autobiografia"></div>
+      <div class="acciones-principales" style="max-width:760px;margin:22px auto 0;">
+        <button id="btn-generar-autobiografia" class="boton-principal" onclick="generarAutobiografia()">Escribir / actualizar mi autobiografía</button>
+      </div>
+    </section>
 
-  <p id="resultado-mis-datos" style="font-family: system-ui, sans-serif; font-size: 0.85rem;"></p>
+    <section id="vista-mis-datos" class="bloque-vista" style="display:none;">
+      <div class="vista-barra"><h2>Privacidad y datos</h2><button class="boton-texto" onclick="mostrarEntrevista()">Volver a conversar</button></div>
+      <p class="subtitulo-seccion" style="margin-bottom:26px;">Tus datos son tuyos. Puedes descargar una copia, restaurarla o eliminar tus contenidos.</p>
 
-  <div class="acciones">
-    <button onclick="volverASesionesDesdeMisDatos()">Volver a sesiones</button>
-  </div>
+      <div class="seccion-datos">
+        <h3>Descargar mis datos</h3>
+        <p>Guarda una copia completa de lo que has contado.</p>
+        <button class="boton-secundario" onclick="exportarMisDatos()">Descargar mi copia</button>
+      </div>
+      <div class="seccion-datos">
+        <h3>Restaurar una copia</h3>
+        <p>La restauración sustituirá por completo tus datos actuales por los del archivo.</p>
+        <input type="file" id="archivo-mis-datos" accept=".json" style="display:block;margin-bottom:9px;">
+        <input type="password" id="password-restaurar-mios" placeholder="Tu contraseña" style="display:block;margin-bottom:9px;">
+        <button class="boton-secundario" onclick="restaurarMisDatos()">Restaurar mis datos</button>
+      </div>
+      <div class="seccion-datos seccion-peligro">
+        <h3>Eliminar mis datos</h3>
+        <p>Esta acción borra permanentemente conversaciones, memoria, cuestionario y autobiografía. Tu cuenta seguirá existiendo.</p>
+        <input type="password" id="password-borrar-mios" placeholder="Tu contraseña" style="display:block;margin-bottom:9px;">
+        <button class="boton-secundario" onclick="borrarMisDatos()">Eliminar todos mis datos</button>
+      </div>
+      <p id="resultado-mis-datos" style="font-family:system-ui,sans-serif;font-size:.8rem;"></p>
+    </section>
+  </main>
+
+  <footer class="pie-privacidad">
+    <a href="/seguridad.html">Privacidad y medidas de seguridad</a>
+  </footer>
 </div>
 
 <script>
+function ocultarVistas() {
+  ['vista-entrevista','vista-cuestionario','vista-metricas','vista-autobiografia','vista-mis-datos'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.style.display = 'none';
+  });
+  cerrarFamilia();
+  cerrarCuenta();
+}
+function mostrarEntrevista() {
+  ocultarVistas();
+  document.getElementById('vista-entrevista').style.display = 'block';
+}
+function mostrarRecuerdos() {
+  mostrarEntrevista();
+  verMemoria({target: document.getElementById('nav-recuerdos')});
+}
+function mostrarConversaciones() {
+  mostrarEntrevista();
+  verSesiones({target: document.getElementById('nav-conversaciones')});
+}
+function mostrarAportaciones() {
+  mostrarEntrevista();
+  verAportaciones({target: document.getElementById('nav-aportaciones')});
+}
+function alternarFamilia(event) {
+  event.stopPropagation();
+  cerrarCuenta();
+  document.getElementById('menu-familia').classList.toggle('abierto');
+}
+function cerrarFamilia() { const el = document.getElementById('menu-familia'); if (el) el.classList.remove('abierto'); }
+function alternarCuenta(event) {
+  event.stopPropagation();
+  cerrarFamilia();
+  document.getElementById('menu-cuenta').classList.toggle('abierto');
+}
+function cerrarCuenta() { const el = document.getElementById('menu-cuenta'); if (el) el.classList.remove('abierto'); }
+document.addEventListener('click', (event) => {
+  const familia = document.getElementById('menu-familia');
+  const cuenta = document.getElementById('menu-cuenta');
+  if (familia && !familia.contains(event.target) && event.target !== document.getElementById('btn-familia')) cerrarFamilia();
+  if (cuenta && !cuenta.contains(event.target) && event.target !== document.getElementById('btn-cuenta')) cerrarCuenta();
+});
+
+
 async function apiFetch(url, opts = {}) {
   const resp = await fetch(url, { ...opts, credentials: 'same-origin' });
   if (resp.status === 401) {
@@ -440,40 +416,8 @@ async function apiFetch(url, opts = {}) {
   return resp;
 }
 
-function cerrarPanelesAbiertos() {
-  // Cualquier vista/lista que pueda quedar abierta al margen del menú.
-  const ids = [
-    'memoria', 'lista-sesiones', 'transcripcion', 'lista-aportaciones',
-    'vista-cuestionario', 'vista-metricas', 'vista-autobiografia', 'vista-mis-datos',
-  ];
-  ids.forEach(id => {
-    const el = document.getElementById(id);
-    if (el) el.style.display = 'none';
-  });
-  transcripcionAbiertaId = null;
-  aportacionAbiertaId = null;
-  document.querySelectorAll('#lista-menu button.activo').forEach(b => b.classList.remove('activo'));
-}
-
-function alternarMenu(event) {
-  event.stopPropagation();
-  const menu = document.getElementById('lista-menu');
-  const seVaAAbrir = !menu.classList.contains('abierta');
-  if (seVaAAbrir) cerrarPanelesAbiertos();
-  menu.classList.toggle('abierta');
-}
-
-function cerrarMenu() {
-  document.getElementById('lista-menu').classList.remove('abierta');
-}
-
-document.addEventListener('click', (event) => {
-  const menu = document.getElementById('lista-menu');
-  const boton = document.getElementById('btn-menu');
-  if (menu.classList.contains('abierta') && !menu.contains(event.target) && event.target !== boton) {
-    cerrarMenu();
-  }
-});
+function alternarMenu() {}
+function cerrarMenu() {}
 
 async function salir() {
   await apiFetch('/api/logout', { method: 'POST' }).catch(() => {});
@@ -1042,30 +986,21 @@ async function reconstruirMemoria() {
     '¿Quieres continuar?';
   if (!confirm(aviso)) return;
 
-  const btn = document.getElementById('btn-reconstruir-memoria');
-  const estado = document.getElementById('aviso-reconstruccion');
-  btn.disabled = true;
-  estado.style.display = 'block';
-  estado.textContent = '🛠️ Reconstruyendo memoria a partir de tus sesiones antiguas... esto puede tardar varios minutos según cuántas tengas. No cierres esta pestaña hasta que termine.';
-
   try {
     const resp = await apiFetch('/api/reconstruir_memoria', { method: 'POST' });
     const data = await resp.json();
     if (!resp.ok) {
-      estado.textContent = '❌ No se pudo reconstruir la memoria: ' + (data.detail || 'error desconocido');
+      alert('No se pudo reconstruir la memoria: ' + (data.detail || 'error desconocido'));
       return;
     }
-    let mensaje = `✅ Memoria reconstruida. Sesiones procesadas: ${data.sesiones_procesadas.length}. ` +
-      `Sesiones sin respuesta (omitidas): ${data.sesiones_omitidas_sin_respuesta.length}.`;
+    let mensaje = `Memoria reconstruida.\n\nSesiones procesadas: ${data.sesiones_procesadas.length}\n` +
+      `Sesiones sin respuesta (omitidas): ${data.sesiones_omitidas_sin_respuesta.length}`;
     if (data.sesiones_con_error.length > 0) {
-      mensaje += ` Sesiones con error (revisar): ${data.sesiones_con_error.map(e => e.sesion_id).join(', ')}.`;
+      mensaje += `\nSesiones con error (revisar): ${data.sesiones_con_error.map(e => e.sesion_id).join(', ')}`;
     }
-    estado.textContent = mensaje;
     alert(mensaje);
   } catch (e) {
-    estado.textContent = '❌ No se pudo reconstruir la memoria. Inténtalo de nuevo.';
-  } finally {
-    btn.disabled = false;
+    alert('No se pudo reconstruir la memoria. Inténtalo de nuevo.');
   }
 }
 
@@ -1479,6 +1414,7 @@ async function borrarMisDatos() {
     mostrarResultadoMisDatos('Hubo un problema al borrar tus datos.', true);
   }
 }
+
 </script>
 </body>
 </html>
