@@ -84,6 +84,14 @@ te quedas sin parte de esta protección sin darte cuenta:**
    igual mismo, pero sin HTTPS forzado, sin HSTS, sin cookies seguras y
    sin restricción de hosts.
 
+## Despliegue en Railway y base de datos persistente
+
+**Este paquete no incluye `memoria.db` a propósito.** Los datos de producción deben permanecer en el volumen persistente de Railway y no deben sustituirse durante un despliegue de código.
+
+La aplicación lee la ruta de la base de datos desde `DB_PATH`. En Railway, configura `DB_PATH` con la ruta del archivo `memoria.db` que ya existe en tu volumen persistente. Si `DB_PATH` no está definida, la aplicación usa `memoria.db` junto a `main.py`, lo que no es adecuado si el volumen está montado en otra ruta.
+
+Antes de desplegar una nueva versión, conserva siempre una copia de seguridad de la base de datos de producción. **No subas ni copies una `memoria.db` del código fuente sobre la del volumen.**
+
 ## Variables de entorno necesarias
 
      ANTHROPIC_API_KEY=sk-ant-...
