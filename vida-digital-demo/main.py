@@ -352,6 +352,40 @@ def init_db_sobre(conn):
         )
     """)
     conn.execute("""
+        CREATE TABLE IF NOT EXISTS autobiografia_proyectos (
+            usuario TEXT PRIMARY KEY,
+            titulo TEXT NOT NULL DEFAULT 'Mi autobiografía',
+            tono TEXT NOT NULL DEFAULT 'natural',
+            estructura_json TEXT NOT NULL DEFAULT '[]',
+            fecha_actualizada TEXT NOT NULL
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS autobiografia_capitulos (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            usuario TEXT NOT NULL,
+            orden INTEGER NOT NULL,
+            titulo TEXT NOT NULL,
+            enfoque TEXT NOT NULL DEFAULT '',
+            contenido TEXT NOT NULL DEFAULT '',
+            estado TEXT NOT NULL DEFAULT 'pendiente',
+            modelo TEXT,
+            tokens_input INTEGER DEFAULT 0,
+            tokens_output INTEGER DEFAULT 0,
+            fecha_generado TEXT,
+            editado_manual INTEGER DEFAULT 0
+        )
+    """)
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS estrategia_entrevista (
+            usuario TEXT PRIMARY KEY,
+            estado_json TEXT NOT NULL DEFAULT '{}',
+            fecha_actualizada TEXT NOT NULL
+        )
+    """)
+
+    conn.execute("""
         CREATE TABLE IF NOT EXISTS reconstrucciones (
             id TEXT PRIMARY KEY, usuario TEXT NOT NULL, estado TEXT NOT NULL,
             total INTEGER NOT NULL DEFAULT 0, procesadas INTEGER NOT NULL DEFAULT 0,
@@ -527,6 +561,7 @@ def nombre_backup_valido(nombre: str) -> bool:
 class MensajeIn(BaseModel):
     mensaje: str = Field(..., min_length=1, max_length=8000)
     sesion_id: int | None = None
+    modo_sorpresa: bool = False
 
 
 class CerrarSesionIn(BaseModel):
@@ -661,6 +696,31 @@ def _preservar_manuales(resumen_previo: dict, nuevo: dict) -> dict:
     nuevo["_manual_cronologia"]=json.loads(json.dumps(previo.get("_manual_cronologia",[]),ensure_ascii=False))
     return nuevo
 
+def cargar_estrategia_entrevista(usuario: str) -> dict:
+    with db() as conn:
+        row = conn.execute("SELECT estado_json FROM estrategia_entrevista WHERE usuario = ?", (usuario,)).fetchone()
+    if not row:
+        return {"hilos": [], "contradicciones": [], "hipotesis_pendientes": []}
+    try:
+        estado = json.loads(row["estado_json"] or "{}")
+    except json.JSONDecodeError:
+        estado = {}
+    estado.setdefault("hilos", [])
+    estado.setdefault("contradicciones", [])
+    estado.setdefault("hipotesis_pendientes", [])
+    return estado
+
+
+def guardar_estrategia_entrevista(usuario: str, estado: dict):
+    estado = estado or {}
+    with db() as conn:
+        conn.execute(
+            "INSERT INTO estrategia_entrevista (usuario, estado_json, fecha_actualizada) VALUES (?, ?, ?) "
+            "ON CONFLICT(usuario) DO UPDATE SET estado_json=excluded.estado_json, fecha_actualizada=excluded.fecha_actualizada",
+            (usuario, json.dumps(estado, ensure_ascii=False), datetime.utcnow().isoformat()),
+        )
+
+
 def cargar_resumen(usuario: str) -> dict:
     with db() as conn:
         row=conn.execute("SELECT resumen FROM memoria WHERE usuario = ?",(usuario,)).fetchone()
@@ -774,6 +834,9 @@ def exportar_datos_usuario(usuario: str) -> dict:
         memoria = conn.execute("SELECT * FROM memoria WHERE usuario = ?", (usuario,)).fetchone()
         autoperc = conn.execute("SELECT * FROM autopercepcion WHERE usuario = ?", (usuario,)).fetchone()
         autobio = conn.execute("SELECT * FROM autobiografia WHERE usuario = ?", (usuario,)).fetchone()
+        autobio_proyecto = conn.execute("SELECT * FROM autobiografia_proyectos WHERE usuario = ?", (usuario,)).fetchone()
+        autobio_capitulos = conn.execute("SELECT * FROM autobiografia_capitulos WHERE usuario = ? ORDER BY orden, id", (usuario,)).fetchall()
+        estrategia = conn.execute("SELECT * FROM estrategia_entrevista WHERE usuario = ?", (usuario,)).fetchone()
     return {
         "formato": "backup-individual-v1",
         "usuario": usuario,
@@ -783,6 +846,9 @@ def exportar_datos_usuario(usuario: str) -> dict:
         "memoria": dict(memoria) if memoria else None,
         "autopercepcion": dict(autoperc) if autoperc else None,
         "autobiografia": dict(autobio) if autobio else None,
+        "autobiografia_proyecto": dict(autobio_proyecto) if autobio_proyecto else None,
+        "autobiografia_capitulos": [dict(row) for row in autobio_capitulos],
+        "estrategia_entrevista": dict(estrategia) if estrategia else None,
     }
 
 
@@ -792,6 +858,9 @@ def borrar_datos_usuario(usuario: str):
         conn.execute("DELETE FROM memoria WHERE usuario = ?", (usuario,))
         conn.execute("DELETE FROM autopercepcion WHERE usuario = ?", (usuario,))
         conn.execute("DELETE FROM autobiografia WHERE usuario = ?", (usuario,))
+        conn.execute("DELETE FROM autobiografia_capitulos WHERE usuario = ?", (usuario,))
+        conn.execute("DELETE FROM autobiografia_proyectos WHERE usuario = ?", (usuario,))
+        conn.execute("DELETE FROM estrategia_entrevista WHERE usuario = ?", (usuario,))
 
 
 def restaurar_datos_usuario(usuario: str, datos: dict):
@@ -822,6 +891,17 @@ def restaurar_datos_usuario(usuario: str, datos: dict):
                 "VALUES (?, ?, ?, ?, ?, ?)",
                 (usuario, ab.get("contenido"), ab.get("fecha_generada"), ab.get("tokens_input", 0), ab.get("tokens_output", 0), ab.get("modelo")),
             )
+        proyecto = datos.get("autobiografia_proyecto")
+        if proyecto:
+            conn.execute("INSERT INTO autobiografia_proyectos (usuario,titulo,tono,estructura_json,fecha_actualizada) VALUES (?,?,?,?,?)",
+                         (usuario, proyecto.get("titulo", "Mi autobiografía"), proyecto.get("tono", "natural"), proyecto.get("estructura_json", "[]"), proyecto.get("fecha_actualizada", datetime.utcnow().isoformat())))
+        for cap in datos.get("autobiografia_capitulos") or []:
+            conn.execute("INSERT INTO autobiografia_capitulos (id,usuario,orden,titulo,enfoque,contenido,estado,modelo,tokens_input,tokens_output,fecha_generado,editado_manual) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                         (cap.get("id"),usuario,cap.get("orden",0),cap.get("titulo", "Capítulo"),cap.get("enfoque", ""),cap.get("contenido", ""),cap.get("estado", "pendiente"),cap.get("modelo"),cap.get("tokens_input",0),cap.get("tokens_output",0),cap.get("fecha_generado"),cap.get("editado_manual",0)))
+        estrategia = datos.get("estrategia_entrevista")
+        if estrategia:
+            conn.execute("INSERT INTO estrategia_entrevista (usuario,estado_json,fecha_actualizada) VALUES (?,?,?)",
+                         (usuario, estrategia.get("estado_json", "{}"), estrategia.get("fecha_actualizada", datetime.utcnow().isoformat())))
 
 
 def verificar_password_de(usuario: str, password: str) -> bool:
@@ -1000,12 +1080,16 @@ def enviar_mensaje(request: Request, payload: MensajeIn, usuario: str = Depends(
             f"Resumen de memoria acumulado hasta ahora (JSON, incluye anio_nacimiento "
             f"si ya se conoce):\n"
             f"{json.dumps(_resumen_para_ia(resumen), ensure_ascii=False)}"
+            f"\n\nEstrategia de entrevista acumulada (no es memoria biográfica factual):\n"
+            f"{json.dumps(cargar_estrategia_entrevista(usuario), ensure_ascii=False)}"
             f"{bloque_autopercepcion}\n\n"
-            f"Empieza la sesión de hoy. Si hay temas_pendientes, prioriza uno de ellos "
-            f"con una pregunta natural; si el resumen está vacío, empieza por la infancia."
+            f"Empieza la sesión de hoy. Si hay hilos abiertos, temas_pendientes o elementos poco explorados, "
+            f"elige uno con criterio narrativo y formula una pregunta natural. Si el resumen está vacío, empieza por la infancia."
         )
         mensajes.append({"role": "user", "content": contexto})
 
+    if payload.modo_sorpresa:
+        mensajes.append({"role": "user", "content": "[MODO SORPRÉNDEME] Elige ahora un hilo, persona, lugar, etapa, contraste o tema poco explorado que pueda enriquecer la historia. No preguntes de forma aleatoria: explica brevemente la conexión si hace falta y haz una sola pregunta concreta."})
     mensajes.append({"role": "user", "content": payload.mensaje})
 
     _inicio = time.perf_counter()
@@ -1068,7 +1152,9 @@ def construir_resumen_desde_transcripcion(usuario: str, resumen_previo: dict, tr
 
     nuevo_resumen = bloque_herramienta.input
     titulo_sesion = nuevo_resumen.pop("titulo_sesion", None)
+    estrategia = nuevo_resumen.pop("estrategia", None) or cargar_estrategia_entrevista(usuario)
     nuevo_resumen = _preservar_manuales(resumen_previo, nuevo_resumen)
+    guardar_estrategia_entrevista(usuario, estrategia)
     validar_coherencia_fechas(nuevo_resumen, usuario)
     return nuevo_resumen, titulo_sesion, respuesta
 
@@ -1131,6 +1217,7 @@ def iniciar_reconstruccion_memoria(request: Request, usuario: str = Depends(obte
         if not vivo: _iniciar_hilo_reconstruccion(job_id,usuario,filas)
         return JSONResponse(status_code=202,content=_estado_publico_reconstruccion(dict(activa)))
     guardar_resumen(usuario,_memoria_solo_manuales(cargar_resumen(usuario)))
+    guardar_estrategia_entrevista(usuario,{"hilos":[],"contradicciones":[],"hipotesis_pendientes":[]})
     job_id=_crear_reconstruccion(usuario,len(filas)); _iniciar_hilo_reconstruccion(job_id,usuario,filas)
     return JSONResponse(status_code=202,content={"job_id":job_id,"estado":"pendiente","total":len(filas)})
 
@@ -1641,6 +1728,9 @@ def admin_borrar_todo(request: Request, admin_password: str = Form(...), confirm
         conn.execute("DELETE FROM memoria")
         conn.execute("DELETE FROM autopercepcion")
         conn.execute("DELETE FROM autobiografia")
+        conn.execute("DELETE FROM autobiografia_capitulos")
+        conn.execute("DELETE FROM autobiografia_proyectos")
+        conn.execute("DELETE FROM estrategia_entrevista")
     return {"ok": True, "mensaje": "Todos los datos de todos los usuarios han sido borrados"}
 
 
@@ -1754,64 +1844,211 @@ def editar_memoria(request: Request, payload: EditarMemoriaIn, usuario: str = De
 @app.get("/api/autobiografia")
 def ver_autobiografia(usuario: str = Depends(obtener_usuario_actual)):
     with db() as conn:
-        row = conn.execute(
-            "SELECT contenido, fecha_generada, modelo FROM autobiografia WHERE usuario = ?",
-            (usuario,),
-        ).fetchone()
-    if not row:
-        return {"contenido": None, "fecha_generada": None, "modelo": None}
-    return {"contenido": row["contenido"], "fecha_generada": row["fecha_generada"], "modelo": row["modelo"]}
+        legacy = conn.execute("SELECT contenido, fecha_generada, modelo FROM autobiografia WHERE usuario = ?", (usuario,)).fetchone()
+        proyecto = conn.execute("SELECT * FROM autobiografia_proyectos WHERE usuario = ?", (usuario,)).fetchone()
+        capitulos = conn.execute(
+            "SELECT id, orden, titulo, enfoque, contenido, estado, modelo, tokens_input, tokens_output, fecha_generado, editado_manual "
+            "FROM autobiografia_capitulos WHERE usuario = ? ORDER BY orden, id", (usuario,)
+        ).fetchall()
+    return {
+        "contenido": legacy["contenido"] if legacy else None,
+        "fecha_generada": legacy["fecha_generada"] if legacy else None,
+        "modelo": legacy["modelo"] if legacy else None,
+        "proyecto": dict(proyecto) if proyecto else None,
+        "capitulos": [dict(c) for c in capitulos],
+    }
+
+
+class AutobiografiaPreviewIn(BaseModel):
+    tono: str = "natural"
+
+
+class AutobiografiaProyectoIn(BaseModel):
+    tono: str = "natural"
+    titulo: str = "Mi autobiografía"
+    capitulos: list[dict]
+
+
+class EditarCapituloIn(BaseModel):
+    titulo: str | None = None
+    enfoque: str | None = None
+    contenido: str | None = None
+
+
+class AccionCapituloIn(BaseModel):
+    accion: str
+
+
+TONOS_AUTOBIOGRAFIA = {
+    "natural": "Natural y conversacional, como si la persona estuviera contando su vida a alguien cercano.",
+    "literario": "Literario pero sobrio: buena prosa y ritmo, sin embellecer ni inventar hechos.",
+    "sobrio": "Sobrio y preciso, con prioridad a claridad, hechos y continuidad cronológica.",
+    "intimo": "Íntimo y reflexivo, dejando espacio a pensamientos y emociones que estén explícitamente presentes en la memoria.",
+    "mixto": "Equilibrado: natural, con momentos literarios solo cuando el material los sostiene.",
+}
+
+
+def _datos_autobiografia(resumen: dict) -> str:
+    return (
+        f"Año de nacimiento (null si no se conoce): {json.dumps(resumen.get('anio_nacimiento'))}\n\n"
+        f"Cronología:\n{json.dumps(resumen.get('cronologia', []), ensure_ascii=False)}\n\n"
+        f"Bloques temáticos:\n{json.dumps(resumen.get('bloques', {}), ensure_ascii=False)}"
+    )
+
+
+def _comprobar_memoria_autobiografia(resumen: dict):
+    if not resumen.get("cronologia") and not any(resumen.get("bloques", {}).values()):
+        raise HTTPException(status_code=400, detail="todavía no hay suficiente memoria guardada para trabajar en la autobiografía")
+
+
+@app.post("/api/autobiografia/previsualizar")
+def previsualizar_autobiografia(payload: AutobiografiaPreviewIn, usuario: str = Depends(obtener_usuario_actual)):
+    comprobar_limite_diario(usuario)
+    if payload.tono not in TONOS_AUTOBIOGRAFIA:
+        raise HTTPException(status_code=400, detail="Tono no permitido")
+    resumen = cargar_resumen(usuario)
+    _comprobar_memoria_autobiografia(resumen)
+    respuesta = llamar_a_claude(
+        model=obtener_modelo_usuario(usuario, "autobiografia"),
+        max_tokens=1800,
+        system=SYSTEM_PROMPT_AUTOBIOGRAFIA_INDICE,
+        tools=[HERRAMIENTA_INDICE_AUTOBIOGRAFIA],
+        tool_choice={"type": "tool", "name": "proponer_indice_autobiografia"},
+        messages=[{"role": "user", "content": f"Tono elegido: {TONOS_AUTOBIOGRAFIA[payload.tono]}\n\n{_datos_autobiografia(resumen)}"}],
+        timeout=60.0,
+    )
+    bloque = next((b for b in respuesta.content if b.type == "tool_use"), None)
+    if bloque is None:
+        raise HTTPException(status_code=502, detail="No se pudo crear la estructura de la autobiografía")
+    return {"tono": payload.tono, "titulo": bloque.input.get("titulo", "Mi autobiografía"), "capitulos": bloque.input.get("capitulos", []),
+            "modelo": obtener_modelo_usuario(usuario, "autobiografia"), "tokens_input": respuesta.usage.input_tokens, "tokens_output": respuesta.usage.output_tokens}
+
+
+@app.post("/api/autobiografia/proyecto")
+def guardar_proyecto_autobiografia(payload: AutobiografiaProyectoIn, usuario: str = Depends(obtener_usuario_actual)):
+    if payload.tono not in TONOS_AUTOBIOGRAFIA:
+        raise HTTPException(status_code=400, detail="Tono no permitido")
+    if not payload.capitulos or len(payload.capitulos) > 30:
+        raise HTTPException(status_code=400, detail="La estructura debe contener entre 1 y 30 capítulos")
+    ahora = datetime.utcnow().isoformat()
+    with db() as conn:
+        conn.execute("DELETE FROM autobiografia_capitulos WHERE usuario = ?", (usuario,))
+        for i, cap in enumerate(payload.capitulos):
+            titulo = str(cap.get("titulo") or f"Capítulo {i+1}").strip()[:200]
+            enfoque = str(cap.get("enfoque") or "").strip()[:1000]
+            conn.execute("INSERT INTO autobiografia_capitulos (usuario, orden, titulo, enfoque) VALUES (?, ?, ?, ?)", (usuario, i, titulo, enfoque))
+        conn.execute("INSERT INTO autobiografia_proyectos (usuario,titulo,tono,estructura_json,fecha_actualizada) VALUES (?,?,?,?,?) "
+                     "ON CONFLICT(usuario) DO UPDATE SET titulo=excluded.titulo, tono=excluded.tono, estructura_json=excluded.estructura_json, fecha_actualizada=excluded.fecha_actualizada",
+                     (usuario, payload.titulo.strip()[:200] or "Mi autobiografía", payload.tono, json.dumps(payload.capitulos, ensure_ascii=False), ahora))
+    return ver_autobiografia(usuario)
+
+
+@app.post("/api/autobiografia/capitulos/{capitulo_id}/generar")
+def generar_capitulo_autobiografia(capitulo_id: int, usuario: str = Depends(obtener_usuario_actual)):
+    comprobar_limite_diario(usuario)
+    resumen = cargar_resumen(usuario)
+    _comprobar_memoria_autobiografia(resumen)
+    with db() as conn:
+        cap = conn.execute("SELECT * FROM autobiografia_capitulos WHERE id=? AND usuario=?", (capitulo_id, usuario)).fetchone()
+        proyecto = conn.execute("SELECT tono FROM autobiografia_proyectos WHERE usuario=?", (usuario,)).fetchone()
+    if not cap: raise HTTPException(status_code=404, detail="Capítulo no encontrado")
+    tono = proyecto["tono"] if proyecto else "natural"
+    respuesta = llamar_a_claude(
+        model=obtener_modelo_usuario(usuario, "autobiografia"), max_tokens=3500,
+        system=SYSTEM_PROMPT_CAPITULO_AUTOBIOGRAFIA,
+        messages=[{"role":"user", "content": f"Tono: {TONOS_AUTOBIOGRAFIA.get(tono, TONOS_AUTOBIOGRAFIA['natural'])}\n\nCapítulo: {cap['titulo']}\nEnfoque: {cap['enfoque']}\n\n{_datos_autobiografia(resumen)}"}],
+        timeout=100.0,
+    )
+    contenido = next((b.text for b in respuesta.content if getattr(b, "type", None) == "text"), "").strip()
+    if not contenido: raise HTTPException(status_code=502, detail="El modelo no devolvió contenido para el capítulo")
+    fecha = datetime.utcnow().isoformat(); modelo = obtener_modelo_usuario(usuario, "autobiografia")
+    with db() as conn:
+        conn.execute("UPDATE autobiografia_capitulos SET contenido=?, estado='generado', modelo=?, tokens_input=tokens_input+?, tokens_output=tokens_output+?, fecha_generado=?, editado_manual=0 WHERE id=? AND usuario=?",
+                     (contenido, modelo, respuesta.usage.input_tokens, respuesta.usage.output_tokens, fecha, capitulo_id, usuario))
+    registrar_uso_diario(usuario, respuesta.usage.input_tokens, respuesta.usage.output_tokens)
+    return {"ok": True, "capitulo_id": capitulo_id, "contenido": contenido, "fecha_generado": fecha, "modelo": modelo}
+
+
+@app.put("/api/autobiografia/capitulos/{capitulo_id}")
+def editar_capitulo_autobiografia(capitulo_id: int, payload: EditarCapituloIn, usuario: str = Depends(obtener_usuario_actual)):
+    with db() as conn:
+        cap = conn.execute("SELECT * FROM autobiografia_capitulos WHERE id=? AND usuario=?", (capitulo_id, usuario)).fetchone()
+        if not cap: raise HTTPException(status_code=404, detail="Capítulo no encontrado")
+        titulo = payload.titulo.strip()[:200] if payload.titulo is not None else cap["titulo"]
+        enfoque = payload.enfoque.strip()[:1000] if payload.enfoque is not None else cap["enfoque"]
+        contenido = payload.contenido if payload.contenido is not None else cap["contenido"]
+        conn.execute("UPDATE autobiografia_capitulos SET titulo=?, enfoque=?, contenido=?, estado=?, editado_manual=? WHERE id=? AND usuario=?",
+                     (titulo, enfoque, contenido, "editado" if payload.contenido is not None else cap["estado"], 1 if payload.contenido is not None else cap["editado_manual"], capitulo_id, usuario))
+    return {"ok": True}
+
+
+@app.post("/api/autobiografia/capitulos/{capitulo_id}/mejorar")
+def mejorar_capitulo_autobiografia(capitulo_id: int, payload: AccionCapituloIn, usuario: str = Depends(obtener_usuario_actual)):
+    comprobar_limite_diario(usuario)
+    acciones = {"reescribir": "reescribe el capítulo manteniendo exactamente los hechos", "desarrollar": "desarrolla los pasajes que ya tienen material suficiente, sin añadir hechos", "acortar": "hazlo más conciso sin perder hechos importantes", "literario": "mejora el ritmo y la calidad literaria sin inventar nada", "personal": "haz la voz más personal y cercana sin inventar pensamientos ni hechos"}
+    if payload.accion not in acciones: raise HTTPException(status_code=400, detail="Acción no permitida")
+    with db() as conn:
+        cap = conn.execute("SELECT * FROM autobiografia_capitulos WHERE id=? AND usuario=?", (capitulo_id, usuario)).fetchone()
+    if not cap or not cap["contenido"]: raise HTTPException(status_code=400, detail="El capítulo todavía no tiene contenido")
+    respuesta = llamar_a_claude(model=obtener_modelo_usuario(usuario, "autobiografia"), max_tokens=3500,
+        system=SYSTEM_PROMPT_MEJORA_CAPITULO,
+        messages=[{"role":"user", "content": f"Acción: {acciones[payload.accion]}\n\nTexto actual:\n{cap['contenido']}\n\nMemoria disponible:\n{_datos_autobiografia(cargar_resumen(usuario))}"}], timeout=100.0)
+    contenido = next((b.text for b in respuesta.content if getattr(b,"type",None)=="text"), "").strip()
+    fecha=datetime.utcnow().isoformat(); modelo=obtener_modelo_usuario(usuario,"autobiografia")
+    with db() as conn:
+        conn.execute("UPDATE autobiografia_capitulos SET contenido=?, estado='editado', modelo=?, tokens_input=tokens_input+?, tokens_output=tokens_output+?, fecha_generado=?, editado_manual=1 WHERE id=? AND usuario=?", (contenido,modelo,respuesta.usage.input_tokens,respuesta.usage.output_tokens,fecha,capitulo_id,usuario))
+    registrar_uso_diario(usuario,respuesta.usage.input_tokens,respuesta.usage.output_tokens)
+    return {"contenido":contenido,"fecha_generado":fecha,"modelo":modelo}
 
 
 @app.post("/api/generar-autobiografia")
 def generar_autobiografia(usuario: str = Depends(obtener_usuario_actual)):
+    """Compatibilidad con la versión anterior: genera una autobiografía completa de una vez."""
     resumen = cargar_resumen(usuario)
-
-    if not resumen.get("cronologia") and not any(resumen.get("bloques", {}).values()):
-        return {"error": "todavía no hay suficiente memoria guardada para generar una autobiografía"}
-
-    _inicio = time.perf_counter()
-    try:
-        respuesta = llamar_a_claude(
-            model=obtener_modelo_usuario(usuario, "autobiografia"),
-            max_tokens=8000,
-            system=SYSTEM_PROMPT_AUTOBIOGRAFIA,
-            messages=[{
-                "role": "user",
-                "content": (
-                    f"Año de nacimiento (null si no se conoce): {json.dumps(resumen.get('anio_nacimiento'))}\n\n"
-                    f"Cronología de eventos (cada uno ya trae su año calculado):\n"
-                    f"{json.dumps(resumen.get('cronologia', []), ensure_ascii=False)}\n\n"
-                    f"Bloques temáticos con detalle:\n{json.dumps(resumen.get('bloques', {}), ensure_ascii=False)}"
-                ),
-            }],
-            timeout=150.0,  # texto largo (hasta 8000 tokens), necesita más margen que el resumen
-        )
-    except anthropic.APITimeoutError:
-        print(f"[tiempos] generar_autobiografia ({usuario}): TIMEOUT tras {time.perf_counter() - _inicio:.1f}s")
-        return {"error": "la generación de la autobiografía ha tardado demasiado y se ha cancelado; puedes intentarlo de nuevo"}
-    print(f"[tiempos] generar_autobiografia ({usuario}): {time.perf_counter() - _inicio:.1f}s")
-    contenido = respuesta.content[0].text
-    fecha = datetime.utcnow().isoformat()
-
+    _comprobar_memoria_autobiografia(resumen)
+    respuesta = llamar_a_claude(model=obtener_modelo_usuario(usuario, "autobiografia"), max_tokens=8000,
+        system=SYSTEM_PROMPT_AUTOBIOGRAFIA,
+        messages=[{"role":"user", "content": _datos_autobiografia(resumen)}], timeout=150.0)
+    contenido = next((b.text for b in respuesta.content if getattr(b,"type",None)=="text"), "").strip(); fecha=datetime.utcnow().isoformat(); modelo=obtener_modelo_usuario(usuario,"autobiografia")
     with db() as conn:
-        conn.execute(
-            "INSERT INTO autobiografia (usuario, contenido, fecha_generada, tokens_input, tokens_output, modelo) "
-            "VALUES (?, ?, ?, ?, ?, ?) "
-            "ON CONFLICT(usuario) DO UPDATE SET contenido = excluded.contenido, "
-            "fecha_generada = excluded.fecha_generada, "
-            "tokens_input = autobiografia.tokens_input + excluded.tokens_input, "
-            "tokens_output = autobiografia.tokens_output + excluded.tokens_output, "
-            "modelo = excluded.modelo",
-            (usuario, contenido, fecha, respuesta.usage.input_tokens, respuesta.usage.output_tokens, obtener_modelo_usuario(usuario, "autobiografia")),
-        )
-
-    return {"contenido": contenido, "fecha_generada": fecha, "modelo": obtener_modelo_usuario(usuario, "autobiografia")}
+        conn.execute("INSERT INTO autobiografia (usuario,contenido,fecha_generada,tokens_input,tokens_output,modelo) VALUES (?,?,?,?,?,?) ON CONFLICT(usuario) DO UPDATE SET contenido=excluded.contenido,fecha_generada=excluded.fecha_generada,tokens_input=autobiografia.tokens_input+excluded.tokens_input,tokens_output=autobiografia.tokens_output+excluded.tokens_output,modelo=excluded.modelo", (usuario,contenido,fecha,respuesta.usage.input_tokens,respuesta.usage.output_tokens,modelo))
+    registrar_uso_diario(usuario,respuesta.usage.input_tokens,respuesta.usage.output_tokens)
+    return {"contenido":contenido,"fecha_generada":fecha,"modelo":modelo}
 
 
 # ---------------------------------------------------------------------------
 # Prompts y datos de la entrevista (igual que antes)
 # ---------------------------------------------------------------------------
+
+SYSTEM_PROMPT_AUTOBIOGRAFIA_INDICE = """Diseña la estructura de una autobiografía a partir SOLO de la memoria proporcionada.
+No escribas la autobiografía. Propón capítulos que tengan suficiente material real.
+No inventes hechos ni rellenes huecos. Evita capítulos vacíos o puramente genéricos.
+Los capítulos deben poder generarse de forma independiente y, juntos, cubrir la historia sin duplicarla.
+"""
+
+HERRAMIENTA_INDICE_AUTOBIOGRAFIA = {
+    "name": "proponer_indice_autobiografia",
+    "description": "Propone el índice editable de una autobiografía basándose exclusivamente en la memoria disponible.",
+    "input_schema": {"type":"object","properties":{
+        "titulo":{"type":"string"},
+        "capitulos":{"type":"array","items":{"type":"object","properties":{
+            "titulo":{"type":"string"}, "enfoque":{"type":"string"}
+        },"required":["titulo","enfoque"]}}
+    },"required":["titulo","capitulos"]}
+}
+
+SYSTEM_PROMPT_CAPITULO_AUTOBIOGRAFIA = """Escribe UN SOLO capítulo de una autobiografía en primera persona.
+Usa exclusivamente los hechos y detalles presentes en la memoria proporcionada y en el enfoque del capítulo.
+No inventes nombres, fechas, diálogos, pensamientos, emociones, relaciones ni detalles sensoriales.
+Si el material es escaso, escribe un capítulo breve: no rellenes con prosa vacía.
+No menciones que eres una IA ni el proceso de generación. No pongas un encabezado con el título: devuelve solo el texto del capítulo.
+"""
+
+SYSTEM_PROMPT_MEJORA_CAPITULO = """Edita el capítulo según la acción indicada.
+Regla fundamental: no añadas ningún hecho que no esté en el texto actual o en la memoria proporcionada.
+Si una mejora estilística exigiría inventar información, conserva el contenido factual y mejora solo la expresión.
+Devuelve únicamente el capítulo resultante, sin comentarios sobre los cambios.
+"""
 
 SYSTEM_PROMPT_ENTREVISTA = """Eres una entrevistadora biográfica profesional, curiosa y paciente.
 Tu objetivo es ayudar a la persona a contar su vida con el máximo detalle posible,
@@ -1913,6 +2150,19 @@ tómalo como una señal de que es un tema que le importa, e invítala activament
 a profundizar en ellos cuando surja la ocasión. Todo esto se queda en la
 conversación (descripción de la foto o el vídeo, lo que significa), nunca le
 pidas que suba ni envíe ningún archivo.
+
+Regla central de profundidad narrativa:
+- No te limites a registrar lo que la persona acaba de decir. Cuando aparezca una persona, lugar, trabajo, afición, conflicto, pérdida, logro, objeto o episodio nuevo que pueda tener importancia biográfica, muestra interés concreto y haz al menos una pregunta de seguimiento antes de abandonar el hilo, salvo que la persona indique que no quiere profundizar.
+- Si el nuevo elemento parece especialmente significativo, puedes hacer 2 o 3 preguntas de seguimiento a lo largo de varios turnos, pero UNA por turno. Después cambia de tema de forma natural.
+- Busca detalles que conviertan una etiqueta en una historia: qué ocurrió, quién estaba allí, qué cambió, por qué fue importante y cómo encaja con otros momentos de su vida. No preguntes mecánicamente todas esas cosas: elige la más útil.
+- Si alguien aparece por primera vez (por ejemplo, "Carlos, un amigo del instituto"), no lo dejes pasar automáticamente. Puedes preguntar quién era para la persona, cómo se conocieron o recordar una anécdota concreta, según lo que ya se haya contado.
+- Si aparece un tema nuevo que parece importante, priorízalo sobre tu guion de bloques. La entrevista debe seguir la historia real, no completar una lista.
+- Puedes hacer una inferencia provisional sobre el significado narrativo de algo, pero debes presentarla explícitamente como hipótesis y consultarla: "Me da la impresión de que ese trabajo fue importante para ti, ¿lo estoy interpretando bien?". Nunca presentes esa interpretación como un hecho ni la guardes como memoria factual si la persona no la confirma.
+- Si detectas una posible contradicción entre lo que se acaba de contar y algo del contexto previo, no elijas silenciosamente una versión. Pregunta con tacto cuál es correcta o si ambas cosas pueden ser ciertas.
+- Si la persona corrige una suposición tuya, acepta la corrección sin defender la interpretación anterior y continúa desde la nueva información.
+- Si se pide "sorpréndeme", elige un hilo poco explorado, una persona mencionada de pasada, un contraste entre dos etapas, un tema pendiente o una conexión interesante entre recuerdos. No hagas una pregunta aleatoria.
+- No conviertas esto en un interrogatorio. La profundidad debe alternarse con conversación natural. Si un elemento no parece importante o la persona lo responde brevemente, acéptalo y continúa.
+
 """
 
 SYSTEM_PROMPT_APORTACION = """Vas a entrevistar a un familiar o allegado de la persona protagonista
@@ -1937,6 +2187,7 @@ cuando algo se cuenta muy por encima.
 No pidas datos de contacto ni información sensible de terceros que no
 salga de forma natural en la propia conversación.
 """
+
 
 SYSTEM_PROMPT_RESUMEN = """Vas a recibir un resumen de memoria previo (puede estar vacío),
 el año de nacimiento de la persona si ya se conoce, el año actual real, y la
@@ -1972,6 +2223,8 @@ la transcripción nueva que se te da ahora). Debe ser concreto y reconocible
 de un vistazo, por ejemplo "Servicio militar en Cartagena" o "Boda y primer
 piso", no algo genérico como "Recuerdos de la infancia" si se puede ser más
 específico.
+
+Además, identifica de forma separada la estrategia futura de entrevista. Esto NO es memoria factual: son pistas para decidir qué explorar después.
 
 Usa la herramienta que tienes disponible para guardar el resultado."""
 
@@ -2029,8 +2282,21 @@ HERRAMIENTA_RESUMEN = {
                 "items": {"type": "string"},
                 "description": "Lista breve de temas apenas tocados o sin tocar todavía",
             },
+            "estrategia": {
+                "type": "object",
+                "description": "Estado de planificación de la entrevista; no es memoria factual",
+                "properties": {
+                    "hilos": {"type":"array","items":{"type":"object","properties":{
+                        "nombre":{"type":"string"},"tipo":{"type":"string"},"contexto":{"type":"string"},
+                        "importancia":{"type":"string"},"explorado":{"type":"integer"},"estado":{"type":"string"}
+                    },"required":["nombre","tipo","contexto","importancia","explorado","estado"]}},
+                    "contradicciones": {"type":"array","items":{"type":"string"}},
+                    "hipotesis_pendientes": {"type":"array","items":{"type":"string"}}
+                },
+                "required":["hilos","contradicciones","hipotesis_pendientes"]
+            },
         },
-        "required": ["titulo_sesion", "anio_nacimiento", "bloques", "cronologia", "temas_pendientes"],
+        "required": ["titulo_sesion", "anio_nacimiento", "bloques", "cronologia", "temas_pendientes", "estrategia"],
     },
 }
 
