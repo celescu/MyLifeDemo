@@ -18,6 +18,8 @@ import json
 import asyncio
 import secrets
 import time
+import threading
+import traceback
 import bcrypt
 from datetime import datetime
 from contextlib import contextmanager, asynccontextmanager
@@ -114,6 +116,123 @@ def llamar_a_claude(**kwargs):
         )
 
 limiter = Limiter(key_func=get_remote_address)
+
+# Estado temporal de reconstrucciones. El trabajo pesado se ejecuta fuera de la
+# petición HTTP para que Railway/proxies no corten la conexión mientras Claude
+# procesa muchas sesiones. Los resultados parciales se guardan en la BD tras
+# cada sesión correcta, por lo que un reinicio no borra lo ya reconstruido.
+RECONSTRUCCIONES = {}
+RECONSTRUCCIONES_LOCK = threading.Lock()
+
+def _nuevo_estado_reconstruccion(job_id, usuario, total):
+    estado = {
+        "job_id": job_id,
+        "usuario": usuario,
+        "estado": "pendiente",
+        "total": total,
+        "procesadas": 0,
+        "omitidas": 0,
+        "errores": [],
+        "sesion_actual": None,
+        "mensaje": "Preparando la reconstrucción…",
+        "inicio": time.time(),
+        "fin": None,
+    }
+    with RECONSTRUCCIONES_LOCK:
+        RECONSTRUCCIONES[job_id] = estado
+    return estado
+
+def _actualizar_reconstruccion(job_id, **cambios):
+    with RECONSTRUCCIONES_LOCK:
+        estado = RECONSTRUCCIONES.get(job_id)
+        if estado:
+            estado.update(cambios)
+
+def _ejecutar_reconstruccion(job_id, usuario, filas):
+    resumen_actual = {}
+    procesadas, omitidas, errores = [], [], []
+    _actualizar_reconstruccion(job_id, estado="procesando", mensaje="Leyendo las conversaciones guardadas…")
+
+    try:
+        for indice, fila in enumerate(filas, 1):
+            sesion_id = fila["id"]
+            _actualizar_reconstruccion(
+                job_id,
+                sesion_actual=sesion_id,
+                mensaje=f"Analizando la sesión {indice} de {len(filas)}…"
+            )
+            try:
+                mensajes = json.loads(fila["mensajes"])
+                turnos_reales = [m for m in mensajes if m["role"] == "assistant"]
+                if not turnos_reales:
+                    omitidas.append(sesion_id)
+                    _actualizar_reconstruccion(
+                        job_id, omitidas=len(omitidas),
+                        mensaje=f"La sesión {sesion_id} no tiene respuesta de la IA; se omite."
+                    )
+                    continue
+
+                transcripcion = "\n".join(
+                    f"{m['role']}: {m['content']}"
+                    for m in mensajes if m["role"] in ("user", "assistant")
+                )
+                nuevo_resumen, titulo_sesion, respuesta = construir_resumen_desde_transcripcion(
+                    usuario, resumen_actual, transcripcion
+                )
+                if nuevo_resumen is None:
+                    raise RuntimeError("El modelo no devolvió la herramienta de memoria.")
+
+                resumen_actual = nuevo_resumen
+                sumar_tokens(sesion_id, respuesta.usage.input_tokens, respuesta.usage.output_tokens)
+                registrar_uso_diario(usuario, respuesta.usage.input_tokens, respuesta.usage.output_tokens)
+                marcar_cerrada(sesion_id)
+                if titulo_sesion:
+                    aplicar_titulo_generado(sesion_id, titulo_sesion)
+                # Guardado incremental: si Railway reinicia el proceso, no se pierde
+                # lo reconstruido hasta el último éxito.
+                guardar_resumen(usuario, resumen_actual)
+                procesadas.append(sesion_id)
+                _actualizar_reconstruccion(
+                    job_id, procesadas=len(procesadas),
+                    mensaje=f"Sesión {sesion_id} reconstruida correctamente."
+                )
+
+            except Exception as exc:
+                detalle = str(exc) or exc.__class__.__name__
+                print(f"[ERROR] reconstruir_memoria, sesión {sesion_id}: {detalle}")
+                traceback.print_exc()
+                errores.append({"sesion_id": sesion_id, "error": detalle})
+                _actualizar_reconstruccion(
+                    job_id, errores=list(errores),
+                    mensaje=f"La sesión {sesion_id} ha dado un error; continúo con la siguiente."
+                )
+
+        # Si hubo al menos un éxito, el resumen incremental ya está guardado.
+        # Si no hubo ninguno, no sobrescribimos una memoria previa que pudiera existir.
+        if procesadas:
+            guardar_resumen(usuario, resumen_actual)
+            estado_final = "completado"
+            mensaje_final = "Reconstrucción terminada."
+        elif not filas:
+            estado_final = "completado"
+            mensaje_final = "No hay conversaciones guardadas para reconstruir."
+        else:
+            estado_final = "error"
+            mensaje_final = "No se pudo reconstruir ninguna sesión. La memoria existente no se ha sustituido."
+
+        _actualizar_reconstruccion(
+            job_id, estado=estado_final, sesion_actual=None, fin=time.time(),
+            mensaje=mensaje_final, errores=list(errores),
+            procesadas=len(procesadas), omitidas=len(omitidas)
+        )
+    except Exception as exc:
+        detalle = str(exc) or exc.__class__.__name__
+        print(f"[ERROR] reconstrucción general {job_id}: {detalle}")
+        traceback.print_exc()
+        _actualizar_reconstruccion(
+            job_id, estado="error", sesion_actual=None, fin=time.time(),
+            mensaje=f"Error inesperado: {detalle}", errores=list(errores) + [{"sesion_id": None, "error": detalle}]
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -928,60 +1047,39 @@ def cerrar_sesion(payload: CerrarSesionIn, usuario: str = Depends(obtener_usuari
 
 @app.post("/api/reconstruir_memoria")
 @limiter.limit("2/hour")
-def reconstruir_memoria(request: Request, usuario: str = Depends(obtener_usuario_actual)):
-    """Recorre todas las sesiones propias guardadas, en orden cronológico, y
-    reconstruye desde cero el resumen de memoria acumulada. Pensado para
-    recuperar la memoria si el resumen se perdió o quedó corrupto, ya que las
-    transcripciones originales de cada sesión siguen intactas en la base de
-    datos. Reutiliza el mismo mecanismo que el cierre de sesión normal, sesión
-    a sesión, así que cuesta tantas llamadas a la API como sesiones haya."""
+def iniciar_reconstruccion_memoria(request: Request, usuario: str = Depends(obtener_usuario_actual)):
+    """Inicia la reconstrucción en segundo plano y devuelve inmediatamente un ID
+    que el navegador puede consultar para mostrar progreso y errores concretos."""
     with db() as conn:
         filas = conn.execute(
             "SELECT id, mensajes FROM sesiones WHERE usuario = ? AND (tipo IS NULL OR tipo = 'propia') ORDER BY fecha ASC, id ASC",
             (usuario,),
         ).fetchall()
 
-    resumen_actual = {}
-    procesadas, omitidas, errores = [], [], []
+    with RECONSTRUCCIONES_LOCK:
+        for estado in RECONSTRUCCIONES.values():
+            if estado["usuario"] == usuario and estado["estado"] in ("pendiente", "procesando"):
+                return {"job_id": estado["job_id"], "estado": estado["estado"], "total": estado["total"]}
 
-    for fila in filas:
-        mensajes = json.loads(fila["mensajes"])
-        turnos_reales = [m for m in mensajes if m["role"] == "assistant"]
-        if not turnos_reales:
-            omitidas.append(fila["id"])
-            continue
+    job_id = secrets.token_urlsafe(18)
+    _nuevo_estado_reconstruccion(job_id, usuario, len(filas))
+    hilo = threading.Thread(
+        target=_ejecutar_reconstruccion,
+        args=(job_id, usuario, filas),
+        name=f"reconstruccion-{job_id}",
+        daemon=True,
+    )
+    hilo.start()
+    return JSONResponse(status_code=202, content={"job_id": job_id, "estado": "pendiente", "total": len(filas)})
 
-        transcripcion = "\n".join(
-            f"{m['role']}: {m['content']}" for m in mensajes if m["role"] in ("user", "assistant")
-        )
-        try:
-            nuevo_resumen, titulo_sesion, respuesta = construir_resumen_desde_transcripcion(
-                usuario, resumen_actual, transcripcion
-            )
-        except anthropic.APITimeoutError:
-            errores.append({"sesion_id": fila["id"], "error": "timeout"})
-            continue
 
-        if nuevo_resumen is None:
-            errores.append({"sesion_id": fila["id"], "error": "el modelo no devolvió resumen"})
-            continue
-
-        resumen_actual = nuevo_resumen
-        sumar_tokens(fila["id"], respuesta.usage.input_tokens, respuesta.usage.output_tokens)
-        registrar_uso_diario(usuario, respuesta.usage.input_tokens, respuesta.usage.output_tokens)
-        marcar_cerrada(fila["id"])
-        if titulo_sesion:
-            aplicar_titulo_generado(fila["id"], titulo_sesion)
-        procesadas.append(fila["id"])
-
-    guardar_resumen(usuario, resumen_actual)
-
-    return {
-        "resumen": resumen_actual,
-        "sesiones_procesadas": procesadas,
-        "sesiones_omitidas_sin_respuesta": omitidas,
-        "sesiones_con_error": errores,
-    }
+@app.get("/api/reconstruir_memoria/{job_id}")
+def estado_reconstruccion_memoria(job_id: str, usuario: str = Depends(obtener_usuario_actual)):
+    with RECONSTRUCCIONES_LOCK:
+        estado = RECONSTRUCCIONES.get(job_id)
+        if not estado or estado["usuario"] != usuario:
+            raise HTTPException(status_code=404, detail="Reconstrucción no encontrada o ya no disponible.")
+        return {k: v for k, v in estado.items() if k != "usuario"}
 
 
 def aplicar_titulo_generado(sesion_id: int, titulo: str):
