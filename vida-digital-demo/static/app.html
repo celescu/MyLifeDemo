@@ -164,12 +164,8 @@
   .vista-barra .volver { font-family:system-ui,sans-serif; font-size:.73rem; color:var(--tinta-suave); text-decoration:none; }
   .vista-barra .volver:hover { color:var(--sello); }
 
-  #memoria, #transcripcion {
-    white-space: pre-wrap; max-width:760px; margin:24px auto 0; padding:18px 0;
-    border-top:1px solid var(--linea); border-bottom:1px solid var(--linea);
-    background:transparent; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-    font-size:.78rem; color:var(--tinta-suave); display:none; overflow:auto;
-  }
+  #memoria, #transcripcion { max-width:760px; margin:24px auto 0; padding:18px 0; border-top:1px solid var(--linea); border-bottom:1px solid var(--linea); background:transparent; color:var(--tinta-suave); display:none; overflow:auto; }
+  .memoria-bloque{border-top:1px solid var(--linea);padding:18px 0}.memoria-bloque:first-child{border-top:0}.memoria-bloque h3{margin:0 0 8px;font-size:1.05rem;font-style:italic;font-weight:400;color:var(--tinta)}.memoria-editor{width:100%;min-height:80px;resize:vertical;background:var(--blanco-papel);border:1px solid var(--linea);padding:10px 12px;color:var(--tinta);font:.9rem/1.6 Georgia,serif}.memoria-linea{display:flex;gap:10px;align-items:center;margin:7px 0}.memoria-linea input{background:var(--blanco-papel);border:1px solid var(--linea);padding:7px 8px;color:var(--tinta);font: .8rem system-ui,sans-serif}.memoria-anio{width:90px}.memoria-evento{flex:1}.memoria-boton{font:.68rem system-ui,sans-serif;padding:6px 9px;border:1px solid var(--linea);background:transparent;color:var(--tinta-suave);cursor:pointer}.memoria-boton:hover{border-color:var(--sello);color:var(--sello)}.memoria-manual{display:inline-block;margin-left:7px;font:.62rem system-ui,sans-serif;color:var(--sello);text-transform:uppercase;letter-spacing:.06em}
   #lista-sesiones, #lista-aportaciones { max-width:760px; margin:24px auto 0; }
   .panel-cierre { max-width:760px; margin:8px auto 0; text-align:right; }
   .panel-cierre .boton-texto { font-size:.72rem; }
@@ -392,6 +388,11 @@
     <div id="reconstruccion-barra"><div id="reconstruccion-progreso"></div></div>
     <div id="reconstruccion-detalle">La aplicación está trabajando con tus conversaciones guardadas. Puedes esperar aquí; no cierres la pestaña.</div>
     <div id="reconstruccion-tiempo">Tiempo transcurrido: 00:00</div>
+    <div style="display:flex;gap:9px;margin-top:16px;justify-content:flex-end;">
+      <button id="btn-cancelar-reconstruccion" class="boton-secundario" onclick="cancelarReconstruccionActual()">Cancelar y guardar progreso</button>
+      <button id="btn-reanudar-reconstruccion" class="boton-principal" style="display:none;" onclick="reanudarReconstruccionActual()">Reanudar</button>
+      <button id="btn-cerrar-reconstruccion" class="boton-texto" style="display:none;" onclick="cerrarModalReconstruccion()">Cerrar</button>
+    </div>
     <div id="reconstruccion-resultado"></div>
   </div>
 </div>
@@ -882,29 +883,23 @@ async function verTranscripcionAportacion(id, titulo) {
 }
 
 async function verMemoria(ev) {
-  const btn = ev.target;
-  const el = document.getElementById('memoria');
-
-  if (el.style.display === 'block') {
-    cerrarRecuerdos();
-    return;
-  }
-
-  const textoOriginal = btn.textContent;
-  btn.disabled = true;
-  btn.textContent = 'Cargando...';
-  try {
-    const resp = await apiFetch('/api/memoria');
-    const data = await resp.json();
-    el.style.display = 'block';
-    el.textContent = JSON.stringify(data, null, 2);
-    document.getElementById('acciones-memoria').style.display = 'block';
-    btn.classList.add('activo');
-  } finally {
-    btn.disabled = false;
-    btn.textContent = textoOriginal;
-  }
+  const btn=ev.target, el=document.getElementById('memoria');
+  if(el.style.display==='block'){cerrarRecuerdos();return;}
+  const original=btn.textContent;btn.disabled=true;btn.textContent='Cargando...';
+  try{const r=await apiFetch('/api/memoria');const d=await r.json();renderizarMemoria(d);el.style.display='block';document.getElementById('acciones-memoria').style.display='block';btn.classList.add('activo');}finally{btn.disabled=false;btn.textContent=original;}
 }
+const NOMBRES_BLOQUES_MEMORIA={infancia:'Infancia',familia:'Familia',lugares:'Lugares',estudios:'Estudios',trabajo:'Trabajo',relaciones:'Relaciones',momentos_de_cambio:'Momentos de cambio',valores:'Valores',aficiones:'Aficiones',otros:'Otros'};
+function renderizarMemoria(data){
+  const el=document.getElementById('memoria'), mf=data._manual_fields||{}, mc=data._manual_cronologia||[];let h='';
+  const am=Object.prototype.hasOwnProperty.call(mf,'anio_nacimiento');
+  h+=`<section class="memoria-bloque"><h3>Año de nacimiento${am?'<span class="memoria-manual">editado</span>':''}</h3><div class="memoria-linea"><input class="memoria-anio" type="number" id="memoria-anio-nacimiento" value="${data.anio_nacimiento??''}" placeholder="Año"><button class="memoria-boton" onclick="guardarCampoMemoria('anio_nacimiento','anio_nacimiento',null,document.getElementById('memoria-anio-nacimiento').value)">Guardar</button></div></section>`;
+  for(const [k,n] of Object.entries(NOMBRES_BLOQUES_MEMORIA)){const v=(data.bloques||{})[k]||'',m=Object.prototype.hasOwnProperty.call(mf,`bloques.${k}`);h+=`<section class="memoria-bloque"><h3>${n}${m?'<span class="memoria-manual">editado</span>':''}</h3><textarea class="memoria-editor" id="memoria-bloque-${k}">${escapeHtml(v)}</textarea><button class="memoria-boton" onclick="guardarCampoMemoria('bloques','${k}',null,document.getElementById('memoria-bloque-${k}').value)">Guardar cambios</button></section>`;}
+  h+='<section class="memoria-bloque"><h3>Cronología</h3>';
+  (data.cronologia||[]).forEach((e,i)=>{const m=mc.some(x=>x.id===e._id);h+=`<div class="memoria-linea"><input class="memoria-anio" type="number" id="memoria-crono-anio-${i}" value="${e.anio??''}" placeholder="Año"><input class="memoria-evento" id="memoria-crono-evento-${i}" value="${escapeHtml(e.evento||'')}" title="Evento"><button class="memoria-boton" onclick="guardarCronologia(${i})">Guardar</button>${m?'<span class="memoria-manual">editado</span>':''}</div><div class="memoria-linea"><input style="flex:1" id="memoria-crono-momento-${i}" value="${escapeHtml(e.momento||'')}" placeholder="Momento o edad"></div>`;});
+  if(!(data.cronologia||[]).length)h+='<p style="font-size:.8rem;">Todavía no hay acontecimientos en la cronología.</p>';h+='</section>';el.innerHTML=h;
+}
+async function guardarCampoMemoria(seccion,campo,indice,valor){try{const r=await apiFetch('/api/memoria/editar',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({seccion,campo,indice,valor})});const d=await r.json();if(!r.ok)throw new Error(d.detail||'No se pudo guardar.');renderizarMemoria(d.resumen);}catch(e){alert(e.message||'No se pudo guardar el recuerdo.');}}
+async function guardarCronologia(i){try{for(const [campo,valor] of [['anio',document.getElementById(`memoria-crono-anio-${i}`).value],['evento',document.getElementById(`memoria-crono-evento-${i}`).value],['momento',document.getElementById(`memoria-crono-momento-${i}`).value]]){const r=await apiFetch('/api/memoria/editar',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({seccion:'cronologia',campo,indice:i,valor})});const d=await r.json();if(!r.ok)throw new Error(d.detail||'No se pudo guardar.');if(campo==='momento')renderizarMemoria(d.resumen);}}catch(e){alert(e.message||'No se pudo guardar el acontecimiento.');}}
 
 function cerrarRecuerdos() {
   const el = document.getElementById('memoria');
@@ -1027,110 +1022,14 @@ async function borrarSesion(id, titulo, btn) {
   }
 }
 
-async function reconstruirMemoria() {
-  if (!confirm(
-    'La aplicación va a repasar TODAS tus conversaciones guardadas, desde la más antigua, y reconstruir la memoria acumulada. ' +
-    'Cada sesión que tenga respuestas de la IA requiere una llamada al modelo y puede tardar. ' +
-    'El proceso guarda los avances a medida que trabaja.\n\n¿Quieres comenzar?'
-  )) return;
-
-  const modal = document.getElementById('reconstruccion-modal');
-  const estado = document.getElementById('reconstruccion-estado');
-  const detalle = document.getElementById('reconstruccion-detalle');
-  const progreso = document.getElementById('reconstruccion-progreso');
-  const tiempo = document.getElementById('reconstruccion-tiempo');
-  const resultado = document.getElementById('reconstruccion-resultado');
-  modal.style.display = 'flex';
-  resultado.style.display = 'none';
-  resultado.innerHTML = '';
-  progreso.style.width = '0%';
-
-  const inicio = Date.now();
-  let temporizador = null;
-  let jobId = null;
-  let terminado = false;
-
-  const actualizarTiempo = () => {
-    const segundos = Math.floor((Date.now() - inicio) / 1000);
-    const mm = String(Math.floor(segundos / 60)).padStart(2, '0');
-    const ss = String(segundos % 60).padStart(2, '0');
-    tiempo.textContent = `Tiempo transcurrido: ${mm}:${ss}`;
-  };
-  temporizador = setInterval(actualizarTiempo, 1000);
-  actualizarTiempo();
-
-  try {
-    estado.textContent = 'Iniciando reconstrucción…';
-    detalle.textContent = 'Leyendo las conversaciones guardadas y preparando el proceso.';
-    const inicioResp = await apiFetch('/api/reconstruir_memoria', { method: 'POST' });
-    const inicioData = await inicioResp.json().catch(() => ({}));
-    if (!inicioResp.ok) {
-      throw new Error(inicioData.detail || 'El servidor no pudo iniciar la reconstrucción.');
-    }
-    jobId = inicioData.job_id;
-
-    while (!terminado) {
-      await new Promise(resolve => setTimeout(resolve, 1000));
-      const resp = await apiFetch(`/api/reconstruir_memoria/${encodeURIComponent(jobId)}`);
-      const data = await resp.json();
-      if (!resp.ok) throw new Error(data.detail || 'No se pudo consultar el progreso.');
-
-      const total = Number(data.total || 0);
-      const procesadas = Number(data.procesadas || 0);
-      const omitidas = Number(data.omitidas || 0);
-      const errores = Array.isArray(data.errores) ? data.errores : [];
-      const terminadas = procesadas + omitidas + errores.length;
-      const porcentaje = total ? Math.min(100, (terminadas / total) * 100) : 100;
-      progreso.style.width = `${porcentaje}%`;
-
-      if (data.estado === 'pendiente') {
-        estado.textContent = 'Preparando reconstrucción…';
-      } else if (data.estado === 'procesando') {
-        estado.textContent = total
-          ? `Reconstruyendo: ${terminadas} de ${total} conversaciones procesadas`
-          : 'No hay conversaciones que reconstruir.';
-      } else if (data.estado === 'completado') {
-        terminado = true;
-        progreso.style.width = '100%';
-        estado.textContent = 'Reconstrucción terminada';
-      } else if (data.estado === 'error') {
-        terminado = true;
-        estado.textContent = 'La reconstrucción no ha podido completarse';
-      }
-
-      detalle.textContent = data.mensaje || '';
-
-      if (terminado) {
-        let html = `<strong>Resultado:</strong> ${procesadas} reconstruidas, ${omitidas} omitidas y ${errores.length} con error.`;
-        if (errores.length) {
-          html += '<ul id="reconstruccion-errores">';
-          errores.forEach(e => {
-            html += `<li>Sesión ${e.sesion_id ?? '?'}: ${escapeHtml(String(e.error || 'error desconocido'))}</li>`;
-          });
-          html += '</ul>';
-        }
-        resultado.innerHTML = html;
-        resultado.style.display = 'block';
-        detalle.textContent = data.mensaje || '';
-        if (data.estado === 'completado') {
-          try { cerrarRecuerdos(); await verMemoria({target: document.getElementById('nav-recuerdos')}); } catch (_) {}
-        }
-        setTimeout(() => { modal.style.display = 'none'; }, 5000);
-      }
-    }
-  } catch (e) {
-    estado.textContent = 'No se ha podido iniciar o consultar la reconstrucción';
-    detalle.textContent = e.message || 'Error desconocido.';
-    resultado.innerHTML = '<strong>Detalle:</strong> ' + escapeHtml(e.message || 'Error desconocido.');
-    resultado.style.display = 'block';
-  } finally {
-    clearInterval(temporizador);
-    if (!terminado) {
-      // Dejamos el diálogo visible para que el usuario pueda leer el error.
-      progreso.style.width = '0%';
-    }
-  }
-}
+let reconstruccionJobId=null,reconstruccionTerminado=false,reconstruccionTemporizador=null,reconstruccionInicio=null;
+function cerrarModalReconstruccion(){if(reconstruccionTerminado)document.getElementById('reconstruccion-modal').style.display='none';}
+async function cancelarReconstruccionActual(){if(!reconstruccionJobId||reconstruccionTerminado)return;const b=document.getElementById('btn-cancelar-reconstruccion');b.disabled=true;try{const r=await apiFetch(`/api/reconstruir_memoria/${encodeURIComponent(reconstruccionJobId)}/cancelar`,{method:'POST'});const d=await r.json();if(!r.ok)throw new Error(d.detail||'No se pudo cancelar.');document.getElementById('reconstruccion-detalle').textContent=d.mensaje||'Cancelando…';}catch(e){alert(e.message||'No se pudo cancelar.');b.disabled=false;}}
+async function reanudarReconstruccionActual(){if(!reconstruccionJobId)return;document.getElementById('btn-reanudar-reconstruccion').style.display='none';document.getElementById('btn-cerrar-reconstruccion').style.display='none';document.getElementById('btn-cancelar-reconstruccion').style.display='inline-block';reconstruccionTerminado=false;try{const r=await apiFetch(`/api/reconstruir_memoria/${encodeURIComponent(reconstruccionJobId)}/reanudar`,{method:'POST'});const d=await r.json();if(!r.ok)throw new Error(d.detail||'No se pudo reanudar.');reconstruccionJobId=d.job_id;reconstruccionInicio=Date.now();await vigilarReconstruccion();}catch(e){document.getElementById('reconstruccion-detalle').textContent=e.message||'No se pudo reanudar.';document.getElementById('btn-cerrar-reconstruccion').style.display='inline-block';}}
+async function vigilarReconstruccion(){const estado=document.getElementById('reconstruccion-estado'),detalle=document.getElementById('reconstruccion-detalle'),progreso=document.getElementById('reconstruccion-progreso'),tiempo=document.getElementById('reconstruccion-tiempo'),resultado=document.getElementById('reconstruccion-resultado'),bc=document.getElementById('btn-cancelar-reconstruccion'),br=document.getElementById('btn-reanudar-reconstruccion'),bx=document.getElementById('btn-cerrar-reconstruccion');if(reconstruccionTemporizador)clearInterval(reconstruccionTemporizador);reconstruccionTemporizador=setInterval(()=>{const x=Math.floor((Date.now()-reconstruccionInicio)/1000);tiempo.textContent=`Tiempo transcurrido: ${String(Math.floor(x/60)).padStart(2,'0')}:${String(x%60).padStart(2,'0')}`},1000);
+while(!reconstruccionTerminado){await new Promise(r=>setTimeout(r,1000));const r=await apiFetch(`/api/reconstruir_memoria/${encodeURIComponent(reconstruccionJobId)}`),d=await r.json();if(!r.ok)throw new Error(d.detail||'No se pudo consultar el progreso.');const total=+d.total||0,pr=+d.procesadas||0,om=+d.omitidas||0,er=Array.isArray(d.errores)?d.errores:[],done=pr+om;progreso.style.width=`${total?Math.min(100,done/total*100):100}%`;if(d.estado==='pendiente')estado.textContent='Preparando reconstrucción…';if(d.estado==='procesando')estado.textContent=`Reconstruyendo: ${done} de ${total} conversaciones terminadas`;if(['completado','cancelado','error'].includes(d.estado)){reconstruccionTerminado=true;if(d.estado==='completado'){progreso.style.width='100%';estado.textContent='Reconstrucción terminada';}else if(d.estado==='cancelado')estado.textContent='Reconstrucción cancelada';else estado.textContent='La reconstrucción se ha detenido por un error';detalle.textContent=d.mensaje||'';let h=`<strong>Progreso:</strong> ${pr} reconstruidas, ${om} omitidas y ${er.length} con error.`;if(d.estado==='cancelado')h+='<br>Los avances ya guardados se conservarán si reanudas el proceso.';if(er.length){h+='<ul id="reconstruccion-errores">';er.forEach(e=>h+=`<li>Sesión ${e.sesion_id??'?'}: ${escapeHtml(String(e.error||'error desconocido'))}</li>`);h+='</ul>';}resultado.innerHTML=h;resultado.style.display='block';bc.style.display='none';bc.disabled=false;bx.style.display='inline-block';br.style.display=(d.estado==='cancelado'||d.estado==='error')?'inline-block':'none';if(d.estado==='completado'){try{cerrarRecuerdos();await verMemoria({target:document.getElementById('nav-recuerdos')});}catch(_){}}}}
+clearInterval(reconstruccionTemporizador);}
+async function reconstruirMemoria(){if(!confirm('La aplicación repasará todas tus conversaciones y reconstruirá la memoria. El proceso puede tardar bastante. Puedes cancelarlo y reanudarlo más tarde; el progreso ya guardado no se pierde.\n\n¿Quieres comenzar?'))return;const modal=document.getElementById('reconstruccion-modal');document.getElementById('reconstruccion-resultado').style.display='none';document.getElementById('reconstruccion-progreso').style.width='0%';document.getElementById('btn-cancelar-reconstruccion').style.display='inline-block';document.getElementById('btn-reanudar-reconstruccion').style.display='none';document.getElementById('btn-cerrar-reconstruccion').style.display='none';modal.style.display='flex';reconstruccionTerminado=false;reconstruccionInicio=Date.now();try{const r=await apiFetch('/api/reconstruir_memoria',{method:'POST'}),d=await r.json();if(!r.ok)throw new Error(d.detail||'El servidor no pudo iniciar la reconstrucción.');reconstruccionJobId=d.job_id;await vigilarReconstruccion();}catch(e){clearInterval(reconstruccionTemporizador);reconstruccionTerminado=true;document.getElementById('reconstruccion-estado').textContent='No se ha podido iniciar la reconstrucción';document.getElementById('reconstruccion-detalle').textContent=e.message||'Error desconocido.';document.getElementById('btn-cancelar-reconstruccion').style.display='none';document.getElementById('btn-cerrar-reconstruccion').style.display='inline-block';}}
 
 function escapeHtml(texto) {
   return String(texto)

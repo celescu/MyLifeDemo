@@ -64,6 +64,12 @@
   <div class="caja">
     <button onclick="listarUsuarios()">Cargar lista de usuarios</button>
     <select id="selector_usuario" style="margin-top:10px;"><option value="">— Carga la lista primero —</option></select>
+    <div id="config-modelos-usuario" style="display:none; margin-top:18px; border-top:1px solid var(--linea); padding-top:14px;">
+      <label>Modelo para la entrevista</label><select id="modelo_entrevista_admin"></select>
+      <label>Modelo para la autobiografía</label><select id="modelo_autobiografia_admin"></select>
+      <button onclick="guardarModelosUsuario()">Guardar modelos</button>
+      <p class="resultado" id="resultado-modelos"></p>
+    </div>
     <p class="resultado" id="resultado-listar"></p>
   </div>
 
@@ -121,9 +127,12 @@
   </div>
 
 <script>
-function passwordAdmin() {
-  return document.getElementById('admin_password').value;
-}
+let usuariosAdmin = [];
+const modelosAdmin = [
+  {id:'claude-haiku-4-5-20251001', nombre:'Estándar — Claude Haiku 4.5'},
+  {id:'claude-sonnet-4-6', nombre:'Avanzado — Claude Sonnet 4.6'}
+];
+function passwordAdmin() { return document.getElementById('admin_password').value; }
 function usuarioSeleccionado() {
   return document.getElementById('selector_usuario').value;
 }
@@ -168,10 +177,28 @@ async function listarUsuarios() {
     const resp = await fetch('/api/admin/listar-usuarios', { method: 'POST', credentials: 'same-origin', body: formData });
     const data = await resp.json();
     if (!resp.ok) { mostrar('resultado-listar', formatearDetalle(data), true); return; }
+    usuariosAdmin = data;
     const sel = document.getElementById('selector_usuario');
     sel.innerHTML = data.map(u => `<option value="${u.usuario}">${u.usuario}</option>`).join('');
+    sel.onchange = actualizarModelosSeleccionados;
+    actualizarModelosSeleccionados();
     mostrar('resultado-listar', `${data.length} usuario(s) cargado(s).`, false);
   } catch (e) { mostrar('resultado-listar', 'Problema de conexión.', true); }
+}
+
+function actualizarModelosSeleccionados() {
+  const usuario=usuarioSeleccionado(), dato=usuariosAdmin.find(u=>u.usuario===usuario), caja=document.getElementById('config-modelos-usuario');
+  if(!dato){caja.style.display='none';return;} caja.style.display='block';
+  for(const id of ['modelo_entrevista_admin','modelo_autobiografia_admin']){const sel=document.getElementById(id);sel.innerHTML=modelosAdmin.map(m=>`<option value="${m.id}">${m.nombre}</option>`).join('');}
+  document.getElementById('modelo_entrevista_admin').value=dato.modelo_entrevista||modelosAdmin[0].id;
+  document.getElementById('modelo_autobiografia_admin').value=dato.modelo_autobiografia||modelosAdmin[0].id;
+}
+async function guardarModelosUsuario(){
+  const usuario=usuarioSeleccionado(); if(!usuario){mostrar('resultado-modelos','Selecciona un usuario.',true);return;}
+  try{const fd=new FormData();fd.append('usuario',usuario);fd.append('admin_password',passwordAdmin());fd.append('modelo_entrevista',document.getElementById('modelo_entrevista_admin').value);fd.append('modelo_autobiografia',document.getElementById('modelo_autobiografia_admin').value);
+    const r=await fetch('/api/admin/configurar-modelos',{method:'POST',credentials:'same-origin',body:fd});const d=await r.json();if(!r.ok)throw new Error(formatearDetalle(d));
+    const u=usuariosAdmin.find(x=>x.usuario===usuario);if(u){u.modelo_entrevista=d.modelo_entrevista;u.modelo_autobiografia=d.modelo_autobiografia;}mostrar('resultado-modelos','Modelos guardados correctamente.',false);
+  }catch(e){mostrar('resultado-modelos',e.message||'No se pudieron guardar los modelos.',true);}
 }
 
 async function exportarUsuarioIndividual() {
