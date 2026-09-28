@@ -1721,7 +1721,7 @@ def ver_memoria(usuario: str = Depends(obtener_usuario_actual)):
 
 @app.post("/api/memoria/editar")
 @limiter.limit("60/hour")
-def editar_memoria(payload: EditarMemoriaIn, usuario: str = Depends(obtener_usuario_actual)):
+def editar_memoria(request: Request, payload: EditarMemoriaIn, usuario: str = Depends(obtener_usuario_actual)):
     resumen=cargar_resumen(usuario); valor=payload.valor
     if payload.seccion=="anio_nacimiento":
         if valor in (None,"","null"): valor=None
