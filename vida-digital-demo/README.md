@@ -21,6 +21,7 @@ su propio usuario y contraseña:
 - `/` (`index.html`) — página de bienvenida pública, explica el proyecto.
   No requiere haber iniciado sesión.
 - `/login.html` — inicio de sesión.
+- `/registro.html` — creación pública de cuenta, con elección del modelo para la entrevista y para la autobiografía.
 - `/app.html` — la aplicación en sí (chat, memoria, autobiografía...).
   Requiere haber iniciado sesión; si no, redirige sola a `/login.html`.
 - `/seguridad.html` — página pública de privacidad y medidas de seguridad.
@@ -265,3 +266,14 @@ Esto evita que un nuevo despliegue desde GitHub cree una base de datos vacía se
 ### Recuperar la memoria a partir de las conversaciones
 
 Si la tabla de memoria queda vacía pero las conversaciones siguen guardadas, entra en **Avanzado → Reconstruir recuerdos desde las conversaciones**. La aplicación recorrerá las sesiones propias en orden cronológico y reconstruirá el resumen de memoria mediante el mismo mecanismo utilizado al cerrar una sesión. Esta operación consume llamadas a la API y debe utilizarse como recuperación, no como operación cotidiana.
+
+
+## Modelos de IA por usuario
+
+La aplicación permite asignar dos modelos independientes a cada cuenta: uno para la entrevista y otro para la autobiografía. Las cuentas nuevas parten de Claude Haiku 4.5 (opción estándar y económica); desde `/admin.html` se pueden cambiar a Claude Sonnet 4.6.
+
+La variable `MODEL` se mantiene como compatibilidad para las cuentas existentes: al migrar la base de datos, las cuentas que todavía no tenían configuración de modelo reciben ese valor. `MODEL_ESTANDAR` y `MODEL_AVANZADO` permiten cambiar los identificadores sin tocar el código.
+
+## Memoria editable y reconstrucción
+
+La memoria estructurada puede editarse desde «Mis recuerdos». Las correcciones manuales quedan marcadas y se reaplican después de una reconstrucción, de modo que una corrección como un año equivocado no se pierde. La reconstrucción guarda el progreso sesión a sesión y permite cancelarla y reanudarla posteriormente.

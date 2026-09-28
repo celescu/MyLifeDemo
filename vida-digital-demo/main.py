@@ -20,6 +20,7 @@ import secrets
 import time
 import threading
 import traceback
+from difflib import SequenceMatcher
 import bcrypt
 from datetime import datetime
 from contextlib import contextmanager, asynccontextmanager
@@ -53,12 +54,20 @@ DB_PATH = os.environ.get("DB_PATH") or (
     else os.path.join(os.path.dirname(__file__), "memoria.db")
 )
 print(f"[db] usando base de datos: {DB_PATH}")
-MODEL = os.environ.get("MODEL") or "claude-sonnet-5"  # "or" ignora también una variable vacía, no solo ausente
-
-# Precios oficiales actuales de claude-sonnet-5 por millón de tokens.
-# Si cambias MODEL, revisa y actualiza también estos dos valores.
-PRECIO_INPUT_POR_MILLON = 2.0
-PRECIO_OUTPUT_POR_MILLON = 10.0
+MODEL_LEGACY = os.environ.get("MODEL") or "claude-sonnet-4-6"
+MODEL_ESTANDAR = os.environ.get("MODEL_ESTANDAR") or "claude-haiku-4-5-20251001"
+MODEL_AVANZADO = os.environ.get("MODEL_AVANZADO") or "claude-sonnet-4-6"
+MODELOS_DISPONIBLES = {
+    MODEL_ESTANDAR: "Estándar — Claude Haiku 4.5",
+    MODEL_AVANZADO: "Avanzado — Claude Sonnet 4.6",
+}
+PRECIOS_MODELO = {
+    "claude-haiku-4-5-20251001": (1.0, 5.0),
+    "claude-sonnet-4-6": (3.0, 15.0),
+    "claude-sonnet-5": (2.0, 10.0),
+}
+PRECIO_INPUT_POR_MILLON = PRECIOS_MODELO.get(MODEL_LEGACY, (3.0, 15.0))[0]
+PRECIO_OUTPUT_POR_MILLON = PRECIOS_MODELO.get(MODEL_LEGACY, (3.0, 15.0))[1]
 
 # Límites de uso por usuario, para que nadie dispare el coste de la cuenta
 # de Anthropic sin querer (o queriendo). Configurables por variable de
@@ -117,123 +126,89 @@ def llamar_a_claude(**kwargs):
 
 limiter = Limiter(key_func=get_remote_address)
 
-# Estado temporal de reconstrucciones. El trabajo pesado se ejecuta fuera de la
-# petición HTTP para que Railway/proxies no corten la conexión mientras Claude
-# procesa muchas sesiones. Los resultados parciales se guardan en la BD tras
-# cada sesión correcta, por lo que un reinicio no borra lo ya reconstruido.
+# Estado temporal + persistente de reconstrucciones. El trabajo pesado se ejecuta
+# fuera de la petición HTTP y el progreso se guarda en la BD tras cada sesión.
 RECONSTRUCCIONES = {}
+RECONSTRUCCIONES_EVENTOS = {}
 RECONSTRUCCIONES_LOCK = threading.Lock()
 
-def _nuevo_estado_reconstruccion(job_id, usuario, total):
-    estado = {
-        "job_id": job_id,
-        "usuario": usuario,
-        "estado": "pendiente",
-        "total": total,
-        "procesadas": 0,
-        "omitidas": 0,
-        "errores": [],
-        "sesion_actual": None,
-        "mensaje": "Preparando la reconstrucción…",
-        "inicio": time.time(),
-        "fin": None,
-    }
+def _memoria_solo_manuales(resumen: dict) -> dict:
+    resumen = _normalizar_resumen(resumen)
+    base={"bloques":{},"cronologia":[],"anio_nacimiento":None,"temas_pendientes":[],
+          "_manual_fields":dict(resumen.get("_manual_fields",{})),
+          "_manual_cronologia":json.loads(json.dumps(resumen.get("_manual_cronologia",[]),ensure_ascii=False))}
+    for path,valor in base["_manual_fields"].items(): _aplicar_path_manual(base,path,valor)
+    for manual in base["_manual_cronologia"]:
+        evento={"_id":manual.get("id",secrets.token_hex(8)),"anio":None,"momento":manual.get("momento",""),"evento":manual.get("evento","")}
+        evento.update(manual.get("campos",{})); base["cronologia"].append(evento)
+    return _normalizar_resumen(base)
+
+def _leer_reconstruccion_db(job_id):
+    with db() as conn:
+        row=conn.execute("SELECT * FROM reconstrucciones WHERE id=?",(job_id,)).fetchone()
+    return dict(row) if row else None
+
+def _guardar_estado_reconstruccion(job_id, **cambios):
+    if not cambios: return
+    with db() as conn:
+        conn.execute("UPDATE reconstrucciones SET " + ", ".join(f"{k}=?" for k in cambios) + " WHERE id=?", list(cambios.values())+[job_id])
     with RECONSTRUCCIONES_LOCK:
-        RECONSTRUCCIONES[job_id] = estado
-    return estado
+        if job_id in RECONSTRUCCIONES: RECONSTRUCCIONES[job_id].update(cambios)
 
-def _actualizar_reconstruccion(job_id, **cambios):
+def _estado_publico_reconstruccion(row):
+    errores=json.loads(row.get("errores") or "[]") if isinstance(row.get("errores"),str) else (row.get("errores") or [])
+    return {"job_id":row["id"],"estado":row["estado"],"total":row["total"],"procesadas":row["procesadas"],"omitidas":row["omitidas"],"errores":errores,"sesion_actual":row.get("sesion_actual"),"mensaje":row.get("mensaje") or "","inicio":row.get("inicio"),"fin":row.get("fin")}
+
+def _crear_reconstruccion(usuario,total,procesadas_ids=None,procesadas=0,omitidas=0,errores=None):
+    job_id=secrets.token_urlsafe(18); ahora=datetime.utcnow().isoformat(); procesadas_ids=procesadas_ids or []; errores=errores or []
+    with db() as conn:
+        conn.execute("INSERT INTO reconstrucciones (id,usuario,estado,total,procesadas,omitidas,errores,procesadas_ids,mensaje,inicio) VALUES (?,?, 'pendiente',?,?,?,?,?,?,?)",
+                     (job_id,usuario,total,procesadas,omitidas,json.dumps(errores,ensure_ascii=False),json.dumps(procesadas_ids),"Preparando la reconstrucción…",ahora))
     with RECONSTRUCCIONES_LOCK:
-        estado = RECONSTRUCCIONES.get(job_id)
-        if estado:
-            estado.update(cambios)
+        RECONSTRUCCIONES[job_id]={"job_id":job_id,"usuario":usuario,"estado":"pendiente","total":total,"procesadas":procesadas,"omitidas":omitidas,"errores":errores,"sesion_actual":None,"mensaje":"Preparando la reconstrucción…","inicio":ahora,"fin":None}
+        RECONSTRUCCIONES_EVENTOS[job_id]=threading.Event()
+    return job_id
 
-def _ejecutar_reconstruccion(job_id, usuario, filas):
-    resumen_actual = {}
-    procesadas, omitidas, errores = [], [], []
-    _actualizar_reconstruccion(job_id, estado="procesando", mensaje="Leyendo las conversaciones guardadas…")
-
+def _ejecutar_reconstruccion(job_id,usuario,filas):
+    evento_cancelacion=RECONSTRUCCIONES_EVENTOS.setdefault(job_id,threading.Event())
+    row=_leer_reconstruccion_db(job_id)
+    if not row: return
+    hechas=set(json.loads(row.get("procesadas_ids") or "[]")); procesadas=int(row.get("procesadas") or 0); omitidas=int(row.get("omitidas") or 0); errores=json.loads(row.get("errores") or "[]")
+    resumen_actual=cargar_resumen(usuario)
+    _guardar_estado_reconstruccion(job_id,estado="procesando",mensaje="Leyendo las conversaciones guardadas…")
+    pendientes=[f for f in filas if f["id"] not in hechas]
     try:
-        for indice, fila in enumerate(filas, 1):
-            sesion_id = fila["id"]
-            _actualizar_reconstruccion(
-                job_id,
-                sesion_actual=sesion_id,
-                mensaje=f"Analizando la sesión {indice} de {len(filas)}…"
-            )
+        for fila in pendientes:
+            if evento_cancelacion.is_set():
+                _guardar_estado_reconstruccion(job_id,estado="cancelado",sesion_actual=None,fin=datetime.utcnow().isoformat(),mensaje="Reconstrucción cancelada. El progreso guardado se conserva.",procesadas=procesadas,omitidas=omitidas,errores=json.dumps(errores,ensure_ascii=False),procesadas_ids=json.dumps(sorted(hechas)))
+                return
+            sid=fila["id"]
+            _guardar_estado_reconstruccion(job_id,sesion_actual=sid,mensaje=f"Analizando la sesión {sid}…",errores=json.dumps(errores,ensure_ascii=False))
             try:
-                mensajes = json.loads(fila["mensajes"])
-                turnos_reales = [m for m in mensajes if m["role"] == "assistant"]
-                if not turnos_reales:
-                    omitidas.append(sesion_id)
-                    _actualizar_reconstruccion(
-                        job_id, omitidas=len(omitidas),
-                        mensaje=f"La sesión {sesion_id} no tiene respuesta de la IA; se omite."
-                    )
-                    continue
-
-                transcripcion = "\n".join(
-                    f"{m['role']}: {m['content']}"
-                    for m in mensajes if m["role"] in ("user", "assistant")
-                )
-                nuevo_resumen, titulo_sesion, respuesta = construir_resumen_desde_transcripcion(
-                    usuario, resumen_actual, transcripcion
-                )
-                if nuevo_resumen is None:
-                    raise RuntimeError("El modelo no devolvió la herramienta de memoria.")
-
-                resumen_actual = nuevo_resumen
-                sumar_tokens(sesion_id, respuesta.usage.input_tokens, respuesta.usage.output_tokens)
-                registrar_uso_diario(usuario, respuesta.usage.input_tokens, respuesta.usage.output_tokens)
-                marcar_cerrada(sesion_id)
-                if titulo_sesion:
-                    aplicar_titulo_generado(sesion_id, titulo_sesion)
-                # Guardado incremental: si Railway reinicia el proceso, no se pierde
-                # lo reconstruido hasta el último éxito.
-                guardar_resumen(usuario, resumen_actual)
-                procesadas.append(sesion_id)
-                _actualizar_reconstruccion(
-                    job_id, procesadas=len(procesadas),
-                    mensaje=f"Sesión {sesion_id} reconstruida correctamente."
-                )
-
+                mensajes=json.loads(fila["mensajes"]); turnos=[m for m in mensajes if m["role"]=="assistant"]
+                if not turnos:
+                    omitidas+=1; hechas.add(sid); _guardar_estado_reconstruccion(job_id,omitidas=omitidas,procesadas_ids=json.dumps(sorted(hechas)),mensaje=f"La sesión {sid} no tiene respuesta de la IA; se omite."); continue
+                transcripcion="\n".join(f"{m['role']}: {m['content']}" for m in mensajes if m["role"] in ("user","assistant"))
+                nuevo,titulo,respuesta=construir_resumen_desde_transcripcion(usuario,resumen_actual,transcripcion)
+                if nuevo is None: raise RuntimeError("El modelo no devolvió la herramienta de memoria.")
+                resumen_actual=nuevo; sumar_tokens(sid,respuesta.usage.input_tokens,respuesta.usage.output_tokens); registrar_uso_diario(usuario,respuesta.usage.input_tokens,respuesta.usage.output_tokens); marcar_cerrada(sid)
+                if titulo: aplicar_titulo_generado(sid,titulo)
+                guardar_resumen(usuario,resumen_actual); procesadas+=1; hechas.add(sid); errores=[e for e in errores if e.get("sesion_id")!=sid]
+                _guardar_estado_reconstruccion(job_id,procesadas=procesadas,errores=json.dumps(errores,ensure_ascii=False),procesadas_ids=json.dumps(sorted(hechas)),mensaje=f"Sesión {sid} reconstruida correctamente.")
             except Exception as exc:
-                detalle = str(exc) or exc.__class__.__name__
-                print(f"[ERROR] reconstruir_memoria, sesión {sesion_id}: {detalle}")
-                traceback.print_exc()
-                errores.append({"sesion_id": sesion_id, "error": detalle})
-                _actualizar_reconstruccion(
-                    job_id, errores=list(errores),
-                    mensaje=f"La sesión {sesion_id} ha dado un error; continúo con la siguiente."
-                )
-
-        # Si hubo al menos un éxito, el resumen incremental ya está guardado.
-        # Si no hubo ninguno, no sobrescribimos una memoria previa que pudiera existir.
-        if procesadas:
-            guardar_resumen(usuario, resumen_actual)
-            estado_final = "completado"
-            mensaje_final = "Reconstrucción terminada."
-        elif not filas:
-            estado_final = "completado"
-            mensaje_final = "No hay conversaciones guardadas para reconstruir."
+                detalle=str(exc) or exc.__class__.__name__; print(f"[ERROR] reconstruir_memoria, sesión {sid}: {detalle}"); traceback.print_exc()
+                errores=[e for e in errores if e.get("sesion_id")!=sid]+[{"sesion_id":sid,"error":detalle}]
+                _guardar_estado_reconstruccion(job_id,errores=json.dumps(errores,ensure_ascii=False),mensaje=f"La sesión {sid} ha dado un error; continúo con la siguiente.")
+        guardar_resumen(usuario,resumen_actual)
+        if len(hechas)>=len(filas):
+            _guardar_estado_reconstruccion(job_id,estado="completado",sesion_actual=None,fin=datetime.utcnow().isoformat(),mensaje="Reconstrucción terminada." if filas else "No hay conversaciones guardadas para reconstruir.",procesadas=procesadas,omitidas=omitidas,errores=json.dumps(errores,ensure_ascii=False),procesadas_ids=json.dumps(sorted(hechas)))
         else:
-            estado_final = "error"
-            mensaje_final = "No se pudo reconstruir ninguna sesión. La memoria existente no se ha sustituido."
-
-        _actualizar_reconstruccion(
-            job_id, estado=estado_final, sesion_actual=None, fin=time.time(),
-            mensaje=mensaje_final, errores=list(errores),
-            procesadas=len(procesadas), omitidas=len(omitidas)
-        )
+            _guardar_estado_reconstruccion(job_id,estado="cancelado",sesion_actual=None,fin=datetime.utcnow().isoformat(),mensaje="La reconstrucción se ha detenido. Puedes reanudarla.",procesadas=procesadas,omitidas=omitidas,errores=json.dumps(errores,ensure_ascii=False),procesadas_ids=json.dumps(sorted(hechas)))
     except Exception as exc:
-        detalle = str(exc) or exc.__class__.__name__
-        print(f"[ERROR] reconstrucción general {job_id}: {detalle}")
-        traceback.print_exc()
-        _actualizar_reconstruccion(
-            job_id, estado="error", sesion_actual=None, fin=time.time(),
-            mensaje=f"Error inesperado: {detalle}", errores=list(errores) + [{"sesion_id": None, "error": detalle}]
-        )
+        detalle=str(exc) or exc.__class__.__name__; traceback.print_exc(); _guardar_estado_reconstruccion(job_id,estado="error",sesion_actual=None,fin=datetime.utcnow().isoformat(),mensaje=f"La reconstrucción se detuvo por un error: {detalle}",errores=json.dumps(errores,ensure_ascii=False),procesadas=procesadas,omitidas=omitidas,procesadas_ids=json.dumps(sorted(hechas)))
 
+def _iniciar_hilo_reconstruccion(job_id,usuario,filas):
+    threading.Thread(target=_ejecutar_reconstruccion,args=(job_id,usuario,filas),name=f"reconstruccion-{job_id}",daemon=True).start()
 
 # ---------------------------------------------------------------------------
 # Ciclo de vida (lifespan) — sustituye al obsoleto @app.on_event("startup")
@@ -354,7 +329,9 @@ def init_db_sobre(conn):
         CREATE TABLE IF NOT EXISTS usuarios (
             usuario TEXT PRIMARY KEY,
             password_hash TEXT NOT NULL,
-            creada TEXT NOT NULL
+            creada TEXT NOT NULL,
+            modelo_entrevista TEXT,
+            modelo_autobiografia TEXT
         )
     """)
     conn.execute("""
@@ -370,7 +347,17 @@ def init_db_sobre(conn):
             contenido TEXT NOT NULL,
             fecha_generada TEXT NOT NULL,
             tokens_input INTEGER DEFAULT 0,
-            tokens_output INTEGER DEFAULT 0
+            tokens_output INTEGER DEFAULT 0,
+            modelo TEXT
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS reconstrucciones (
+            id TEXT PRIMARY KEY, usuario TEXT NOT NULL, estado TEXT NOT NULL,
+            total INTEGER NOT NULL DEFAULT 0, procesadas INTEGER NOT NULL DEFAULT 0,
+            omitidas INTEGER NOT NULL DEFAULT 0, errores TEXT NOT NULL DEFAULT '[]',
+            procesadas_ids TEXT NOT NULL DEFAULT '[]', sesion_actual INTEGER,
+            mensaje TEXT, inicio TEXT NOT NULL, fin TEXT
         )
     """)
     conn.execute("""
@@ -389,6 +376,7 @@ def init_db_sobre(conn):
         ("tokens_input", "INTEGER DEFAULT 0"),
         ("tokens_output", "INTEGER DEFAULT 0"),
         ("titulo", "TEXT"),
+        ("modelo", "TEXT"),
         ("titulo_manual", "INTEGER DEFAULT 0"),
         ("tipo", "TEXT DEFAULT 'propia'"),
         ("aportante_nombre", "TEXT"),
@@ -396,6 +384,14 @@ def init_db_sobre(conn):
     ]:
         if columna not in columnas_existentes:
             conn.execute(f"ALTER TABLE sesiones ADD COLUMN {columna} {definicion}")
+    columnas_usuarios = {fila[1] for fila in conn.execute("PRAGMA table_info(usuarios)").fetchall()}
+    for columna in ("modelo_entrevista", "modelo_autobiografia"):
+        if columna not in columnas_usuarios:
+            conn.execute(f"ALTER TABLE usuarios ADD COLUMN {columna} TEXT")
+    conn.execute("UPDATE usuarios SET modelo_entrevista = COALESCE(modelo_entrevista, ?), modelo_autobiografia = COALESCE(modelo_autobiografia, ?)", (MODEL_LEGACY, MODEL_LEGACY))
+    columnas_autobiografia = {fila[1] for fila in conn.execute("PRAGMA table_info(autobiografia)").fetchall()}
+    if "modelo" not in columnas_autobiografia:
+        conn.execute("ALTER TABLE autobiografia ADD COLUMN modelo TEXT")
 
 
 def init_db():
@@ -545,32 +541,39 @@ class NuevaAportacionIn(BaseModel):
 class AutopercepcionIn(BaseModel):
     respuestas: dict
 
+class EditarMemoriaIn(BaseModel):
+    seccion: str
+    campo: str
+    valor: str | int | None = None
+    indice: int | None = None
+
 
 class LoginIn(BaseModel):
     usuario: str = Field(..., min_length=1, max_length=64)
     password: str = Field(..., min_length=1, max_length=256)
 
 
-class CrearUsuarioIn(BaseModel):
+class CrearUsuarioBase(BaseModel):
     usuario: str = Field(..., min_length=3, max_length=64)
     password: str = Field(..., min_length=10, max_length=256)
-    admin_password: str
-
     @field_validator("usuario")
     @classmethod
-    def usuario_valido(cls, v: str) -> str:
-        if not all(c.isalnum() or c in "._-" for c in v):
-            raise ValueError("El usuario solo puede contener letras, números, punto, guion y guion bajo")
+    def usuario_valido(cls,v:str)->str:
+        if not all(c.isalnum() or c in "._-" for c in v): raise ValueError("El usuario solo puede contener letras, números, punto, guion y guion bajo")
         return v
-
     @field_validator("password")
     @classmethod
-    def password_minima(cls, v: str) -> str:
-        if len(v) < 10:
-            raise ValueError("La contraseña debe tener al menos 10 caracteres")
-        if v.lower() in {"1234567890", "password", "contraseña", "qwertyuiop", "0000000000"}:
-            raise ValueError("Contraseña demasiado común")
+    def password_minima(cls,v:str)->str:
+        if len(v)<10: raise ValueError("La contraseña debe tener al menos 10 caracteres")
+        if v.lower() in {"1234567890","password","contraseña","qwertyuiop","0000000000"}: raise ValueError("Contraseña demasiado común")
         return v
+
+class CrearUsuarioIn(CrearUsuarioBase):
+    admin_password: str
+
+class RegistroIn(CrearUsuarioBase):
+    modelo_entrevista: str = MODEL_ESTANDAR
+    modelo_autobiografia: str = MODEL_ESTANDAR
 
 
 # ---------------------------------------------------------------------------
@@ -596,26 +599,78 @@ def guardar_autopercepcion(usuario: str, respuestas: dict):
         )
 
 
+def obtener_modelos_usuario(usuario: str) -> tuple[str, str]:
+    with db() as conn:
+        row = conn.execute("SELECT modelo_entrevista, modelo_autobiografia FROM usuarios WHERE usuario = ?", (usuario,)).fetchone()
+    if not row:
+        return MODEL_ESTANDAR, MODEL_ESTANDAR
+    return row["modelo_entrevista"] or MODEL_ESTANDAR, row["modelo_autobiografia"] or MODEL_ESTANDAR
+
+def obtener_modelo_usuario(usuario: str, tipo: str) -> str:
+    entrevista, autobiografia = obtener_modelos_usuario(usuario)
+    modelo = entrevista if tipo == "entrevista" else autobiografia
+    return modelo if modelo in MODELOS_DISPONIBLES else MODEL_ESTANDAR
+
+def nombre_modelo(modelo: str) -> str:
+    return MODELOS_DISPONIBLES.get(modelo, modelo)
+
+def coste_tokens_modelo(modelo: str, tokens_input: int, tokens_output: int) -> float:
+    pin, pout = PRECIOS_MODELO.get(modelo, (PRECIO_INPUT_POR_MILLON, PRECIO_OUTPUT_POR_MILLON))
+    return (tokens_input or 0) / 1_000_000 * pin + (tokens_output or 0) / 1_000_000 * pout
+
+def _normalizar_resumen(resumen: dict) -> dict:
+    resumen = resumen or {}
+    resumen.setdefault("bloques", {})
+    resumen.setdefault("cronologia", [])
+    resumen.setdefault("anio_nacimiento", None)
+    resumen.setdefault("temas_pendientes", [])
+    resumen.setdefault("_manual_fields", {})
+    resumen.setdefault("_manual_cronologia", [])
+    for evento in resumen["cronologia"]:
+        evento.setdefault("_id", secrets.token_hex(8))
+    return resumen
+
+def _resumen_para_ia(resumen: dict) -> dict:
+    limpio = json.loads(json.dumps(resumen, ensure_ascii=False))
+    limpio.pop("_manual_fields", None); limpio.pop("_manual_cronologia", None)
+    for evento in limpio.get("cronologia", []): evento.pop("_id", None)
+    return limpio
+
+def _aplicar_path_manual(obj: dict, path: str, valor):
+    partes = path.split("."); actual = obj
+    for parte in partes[:-1]:
+        if not isinstance(actual, dict) or parte not in actual: return
+        actual = actual[parte]
+    if isinstance(actual, dict): actual[partes[-1]] = valor
+
+def _preservar_manuales(resumen_previo: dict, nuevo: dict) -> dict:
+    previo = _normalizar_resumen(resumen_previo); nuevo = _normalizar_resumen(nuevo)
+    for path, valor in previo.get("_manual_fields", {}).items(): _aplicar_path_manual(nuevo, path, valor)
+    for manual in previo.get("_manual_cronologia", []):
+        candidato = next((e for e in nuevo.get("cronologia", []) if e.get("_id") == manual.get("id")), None)
+        if candidato is None:
+            base=f"{manual.get('evento','')}|{manual.get('momento','')}".lower(); mejor=(0,None)
+            for e in nuevo.get("cronologia", []):
+                actual=f"{e.get('evento','')}|{e.get('momento','')}".lower(); r=SequenceMatcher(None,base,actual).ratio()
+                if r>mejor[0]: mejor=(r,e)
+            if mejor[0]>=0.55: candidato=mejor[1]
+        if candidato is not None:
+            for campo,valor in manual.get("campos",{}).items(): candidato[campo]=valor
+            candidato["_id"]=manual.get("id",candidato.get("_id",secrets.token_hex(8)))
+    nuevo["_manual_fields"]=dict(previo.get("_manual_fields",{}))
+    nuevo["_manual_cronologia"]=json.loads(json.dumps(previo.get("_manual_cronologia",[]),ensure_ascii=False))
+    return nuevo
+
 def cargar_resumen(usuario: str) -> dict:
     with db() as conn:
-        row = conn.execute(
-            "SELECT resumen FROM memoria WHERE usuario = ?", (usuario,)
-        ).fetchone()
-    if row:
-        resumen = json.loads(row["resumen"])
-        resumen.setdefault("cronologia", [])
-        resumen.setdefault("anio_nacimiento", None)
-        return resumen
-    return {"bloques": {}, "cronologia": [], "anio_nacimiento": None, "temas_pendientes": []}
-
+        row=conn.execute("SELECT resumen FROM memoria WHERE usuario = ?",(usuario,)).fetchone()
+    if row: return _normalizar_resumen(json.loads(row["resumen"]))
+    return _normalizar_resumen({"bloques":{},"cronologia":[],"anio_nacimiento":None,"temas_pendientes":[]})
 
 def guardar_resumen(usuario: str, resumen: dict):
+    resumen=_normalizar_resumen(resumen)
     with db() as conn:
-        conn.execute(
-            "INSERT INTO memoria (usuario, resumen) VALUES (?, ?) "
-            "ON CONFLICT(usuario) DO UPDATE SET resumen = excluded.resumen",
-            (usuario, json.dumps(resumen, ensure_ascii=False)),
-        )
+        conn.execute("INSERT INTO memoria (usuario,resumen) VALUES (?,?) ON CONFLICT(usuario) DO UPDATE SET resumen=excluded.resumen",(usuario,json.dumps(resumen,ensure_ascii=False)))
 
 
 def obtener_o_crear_sesion(usuario: str, sesion_id: int | None) -> tuple[int, list, str]:
@@ -634,8 +689,8 @@ def obtener_o_crear_sesion(usuario: str, sesion_id: int | None) -> tuple[int, li
                 return row["id"], json.loads(row["mensajes"]), row["fecha"]
         fecha = datetime.utcnow().isoformat()
         cur = conn.execute(
-            "INSERT INTO sesiones (usuario, fecha, mensajes) VALUES (?, ?, ?)",
-            (usuario, fecha, json.dumps([])),
+            "INSERT INTO sesiones (usuario, fecha, mensajes, modelo) VALUES (?, ?, ?, ?)",
+            (usuario, fecha, json.dumps([]), obtener_modelo_usuario(usuario, "entrevista")),
         )
         return cur.lastrowid, [], fecha
 
@@ -715,6 +770,7 @@ def comprobar_limite_diario(usuario: str):
 def exportar_datos_usuario(usuario: str) -> dict:
     with db() as conn:
         sesiones = conn.execute("SELECT * FROM sesiones WHERE usuario = ?", (usuario,)).fetchall()
+        cuenta = conn.execute("SELECT usuario, creada, modelo_entrevista, modelo_autobiografia FROM usuarios WHERE usuario = ?", (usuario,)).fetchone()
         memoria = conn.execute("SELECT * FROM memoria WHERE usuario = ?", (usuario,)).fetchone()
         autoperc = conn.execute("SELECT * FROM autopercepcion WHERE usuario = ?", (usuario,)).fetchone()
         autobio = conn.execute("SELECT * FROM autobiografia WHERE usuario = ?", (usuario,)).fetchone()
@@ -722,6 +778,7 @@ def exportar_datos_usuario(usuario: str) -> dict:
         "formato": "backup-individual-v1",
         "usuario": usuario,
         "exportado_el": datetime.utcnow().isoformat(),
+        "cuenta": dict(cuenta) if cuenta else None,
         "sesiones": [dict(row) for row in sesiones],
         "memoria": dict(memoria) if memoria else None,
         "autopercepcion": dict(autoperc) if autoperc else None,
@@ -743,13 +800,13 @@ def restaurar_datos_usuario(usuario: str, datos: dict):
         for s in datos.get("sesiones") or []:
             conn.execute(
                 "INSERT INTO sesiones (usuario, fecha, mensajes, cerrada, fecha_cierre, tokens_input, "
-                "tokens_output, titulo, titulo_manual, tipo, aportante_nombre, aportante_relacion) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "tokens_output, titulo, titulo_manual, tipo, aportante_nombre, aportante_relacion, modelo) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     usuario, s.get("fecha"), s.get("mensajes"), s.get("cerrada", 0),
                     s.get("fecha_cierre"), s.get("tokens_input", 0), s.get("tokens_output", 0),
                     s.get("titulo"), s.get("titulo_manual", 0),
-                    s.get("tipo", "propia"), s.get("aportante_nombre"), s.get("aportante_relacion"),
+                    s.get("tipo", "propia"), s.get("aportante_nombre"), s.get("aportante_relacion"), s.get("modelo"),
                 ),
             )
         m = datos.get("memoria")
@@ -761,10 +818,9 @@ def restaurar_datos_usuario(usuario: str, datos: dict):
         ab = datos.get("autobiografia")
         if ab:
             conn.execute(
-                "INSERT INTO autobiografia (usuario, contenido, fecha_generada, tokens_input, tokens_output) "
-                "VALUES (?, ?, ?, ?, ?)",
-                (usuario, ab.get("contenido"), ab.get("fecha_generada"),
-                 ab.get("tokens_input", 0), ab.get("tokens_output", 0)),
+                "INSERT INTO autobiografia (usuario, contenido, fecha_generada, tokens_input, tokens_output, modelo) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (usuario, ab.get("contenido"), ab.get("fecha_generada"), ab.get("tokens_input", 0), ab.get("tokens_output", 0), ab.get("modelo")),
             )
 
 
@@ -801,6 +857,23 @@ def obtener_usuario_actual(request: Request) -> str:
 # ---------------------------------------------------------------------------
 # Autenticación
 # ---------------------------------------------------------------------------
+
+@app.get("/api/modelos-disponibles")
+def modelos_disponibles():
+    return [{"id":k,"nombre":v} for k,v in MODELOS_DISPONIBLES.items()]
+
+@app.post("/api/registro")
+@limiter.limit("5/hour")
+def registro(payload: RegistroIn):
+    if payload.modelo_entrevista not in MODELOS_DISPONIBLES or payload.modelo_autobiografia not in MODELOS_DISPONIBLES:
+        raise HTTPException(status_code=400, detail="Modelo no permitido")
+    password_hash=bcrypt.hashpw(payload.password.encode(),bcrypt.gensalt()).decode()
+    with db() as conn:
+        if conn.execute("SELECT 1 FROM usuarios WHERE usuario=?",(payload.usuario,)).fetchone():
+            raise HTTPException(status_code=400,detail="Ese nombre de usuario ya existe")
+        conn.execute("INSERT INTO usuarios (usuario,password_hash,creada,modelo_entrevista,modelo_autobiografia) VALUES (?,?,?,?,?)",
+                     (payload.usuario,password_hash,datetime.utcnow().isoformat(),payload.modelo_entrevista,payload.modelo_autobiografia))
+    return {"ok":True}
 
 @app.get("/api/whoami")
 def whoami(usuario: str = Depends(obtener_usuario_actual)):
@@ -868,8 +941,8 @@ def crear_usuario(request: Request, payload: CrearUsuarioIn):
         if existe:
             raise HTTPException(status_code=400, detail="Ese nombre de usuario ya existe")
         conn.execute(
-            "INSERT INTO usuarios (usuario, password_hash, creada) VALUES (?, ?, ?)",
-            (payload.usuario, password_hash, datetime.utcnow().isoformat()),
+            "INSERT INTO usuarios (usuario, password_hash, creada, modelo_entrevista, modelo_autobiografia) VALUES (?, ?, ?, ?, ?)",
+            (payload.usuario, password_hash, datetime.utcnow().isoformat(), MODEL_ESTANDAR, MODEL_ESTANDAR),
         )
     return {"ok": True}
 
@@ -926,7 +999,7 @@ def enviar_mensaje(request: Request, payload: MensajeIn, usuario: str = Depends(
             f"Año actual real: {datetime.utcnow().year}\n\n"
             f"Resumen de memoria acumulado hasta ahora (JSON, incluye anio_nacimiento "
             f"si ya se conoce):\n"
-            f"{json.dumps(resumen, ensure_ascii=False)}"
+            f"{json.dumps(_resumen_para_ia(resumen), ensure_ascii=False)}"
             f"{bloque_autopercepcion}\n\n"
             f"Empieza la sesión de hoy. Si hay temas_pendientes, prioriza uno de ellos "
             f"con una pregunta natural; si el resumen está vacío, empieza por la infancia."
@@ -937,7 +1010,7 @@ def enviar_mensaje(request: Request, payload: MensajeIn, usuario: str = Depends(
 
     _inicio = time.perf_counter()
     respuesta = llamar_a_claude(
-        model=MODEL,
+        model=obtener_modelo_usuario(usuario, "entrevista"),
         max_tokens=500,
         system=SYSTEM_PROMPT_ENTREVISTA,
         messages=mensajes,
@@ -970,7 +1043,7 @@ def construir_resumen_desde_transcripcion(usuario: str, resumen_previo: dict, tr
     Se usa tanto al cerrar una sesión como al reconstruir la memoria completa
     a partir de sesiones antiguas."""
     respuesta = llamar_a_claude(
-        model=MODEL,
+        model=obtener_modelo_usuario(usuario, "entrevista"),
         max_tokens=4000,
         system=SYSTEM_PROMPT_RESUMEN,
         tools=[HERRAMIENTA_RESUMEN],
@@ -981,7 +1054,7 @@ def construir_resumen_desde_transcripcion(usuario: str, resumen_previo: dict, tr
                 f"Año actual real: {datetime.utcnow().year}\n"
                 f"Año de nacimiento ya conocido (null si aún no se sabe): "
                 f"{json.dumps(resumen_previo.get('anio_nacimiento'))}\n\n"
-                f"Resumen previo:\n{json.dumps(resumen_previo, ensure_ascii=False)}\n\n"
+                f"Resumen previo:\n{json.dumps(_resumen_para_ia(resumen_previo), ensure_ascii=False)}\n\n"
                 f"Transcripción de la nueva sesión:\n{transcripcion}"
             ),
         }],
@@ -995,6 +1068,7 @@ def construir_resumen_desde_transcripcion(usuario: str, resumen_previo: dict, tr
 
     nuevo_resumen = bloque_herramienta.input
     titulo_sesion = nuevo_resumen.pop("titulo_sesion", None)
+    nuevo_resumen = _preservar_manuales(resumen_previo, nuevo_resumen)
     validar_coherencia_fechas(nuevo_resumen, usuario)
     return nuevo_resumen, titulo_sesion, respuesta
 
@@ -1048,38 +1122,41 @@ def cerrar_sesion(payload: CerrarSesionIn, usuario: str = Depends(obtener_usuari
 @app.post("/api/reconstruir_memoria")
 @limiter.limit("2/hour")
 def iniciar_reconstruccion_memoria(request: Request, usuario: str = Depends(obtener_usuario_actual)):
-    """Inicia la reconstrucción en segundo plano y devuelve inmediatamente un ID
-    que el navegador puede consultar para mostrar progreso y errores concretos."""
     with db() as conn:
-        filas = conn.execute(
-            "SELECT id, mensajes FROM sesiones WHERE usuario = ? AND (tipo IS NULL OR tipo = 'propia') ORDER BY fecha ASC, id ASC",
-            (usuario,),
-        ).fetchall()
+        filas=conn.execute("SELECT id,mensajes FROM sesiones WHERE usuario=? AND (tipo IS NULL OR tipo='propia') ORDER BY fecha ASC,id ASC",(usuario,)).fetchall()
+        activa=conn.execute("SELECT * FROM reconstrucciones WHERE usuario=? AND estado IN ('pendiente','procesando') ORDER BY inicio DESC LIMIT 1",(usuario,)).fetchone()
+    if activa:
+        job_id=activa["id"]
+        vivo=any(t.name==f"reconstruccion-{job_id}" and t.is_alive() for t in threading.enumerate())
+        if not vivo: _iniciar_hilo_reconstruccion(job_id,usuario,filas)
+        return JSONResponse(status_code=202,content=_estado_publico_reconstruccion(dict(activa)))
+    guardar_resumen(usuario,_memoria_solo_manuales(cargar_resumen(usuario)))
+    job_id=_crear_reconstruccion(usuario,len(filas)); _iniciar_hilo_reconstruccion(job_id,usuario,filas)
+    return JSONResponse(status_code=202,content={"job_id":job_id,"estado":"pendiente","total":len(filas)})
 
-    with RECONSTRUCCIONES_LOCK:
-        for estado in RECONSTRUCCIONES.values():
-            if estado["usuario"] == usuario and estado["estado"] in ("pendiente", "procesando"):
-                return {"job_id": estado["job_id"], "estado": estado["estado"], "total": estado["total"]}
+@app.post("/api/reconstruir_memoria/{job_id}/cancelar")
+def cancelar_reconstruccion_memoria(job_id:str,usuario:str=Depends(obtener_usuario_actual)):
+    row=_leer_reconstruccion_db(job_id)
+    if not row or row["usuario"]!=usuario: raise HTTPException(status_code=404,detail="Reconstrucción no encontrada.")
+    if row["estado"] not in ("pendiente","procesando"): return _estado_publico_reconstruccion(row)
+    RECONSTRUCCIONES_EVENTOS.setdefault(job_id,threading.Event()).set(); _guardar_estado_reconstruccion(job_id,mensaje="Cancelando…")
+    return {"ok":True,"mensaje":"Se ha solicitado la cancelación. El progreso guardado se conserva."}
 
-    job_id = secrets.token_urlsafe(18)
-    _nuevo_estado_reconstruccion(job_id, usuario, len(filas))
-    hilo = threading.Thread(
-        target=_ejecutar_reconstruccion,
-        args=(job_id, usuario, filas),
-        name=f"reconstruccion-{job_id}",
-        daemon=True,
-    )
-    hilo.start()
-    return JSONResponse(status_code=202, content={"job_id": job_id, "estado": "pendiente", "total": len(filas)})
-
+@app.post("/api/reconstruir_memoria/{job_id}/reanudar")
+@limiter.limit("2/hour")
+def reanudar_reconstruccion_memoria(job_id:str,request:Request,usuario:str=Depends(obtener_usuario_actual)):
+    row=_leer_reconstruccion_db(job_id)
+    if not row or row["usuario"]!=usuario: raise HTTPException(status_code=404,detail="Reconstrucción no encontrada.")
+    if row["estado"] not in ("cancelado","error"): raise HTTPException(status_code=400,detail="Esta reconstrucción todavía está activa o ya ha terminado.")
+    with db() as conn: filas=conn.execute("SELECT id,mensajes FROM sesiones WHERE usuario=? AND (tipo IS NULL OR tipo='propia') ORDER BY fecha ASC,id ASC",(usuario,)).fetchall()
+    job_nuevo=_crear_reconstruccion(usuario,len(filas),json.loads(row.get("procesadas_ids") or "[]"),row["procesadas"],row["omitidas"],json.loads(row.get("errores") or "[]")); _iniciar_hilo_reconstruccion(job_nuevo,usuario,filas)
+    return JSONResponse(status_code=202,content={"job_id":job_nuevo,"estado":"pendiente","total":len(filas),"procesadas":row["procesadas"],"omitidas":row["omitidas"]})
 
 @app.get("/api/reconstruir_memoria/{job_id}")
-def estado_reconstruccion_memoria(job_id: str, usuario: str = Depends(obtener_usuario_actual)):
-    with RECONSTRUCCIONES_LOCK:
-        estado = RECONSTRUCCIONES.get(job_id)
-        if not estado or estado["usuario"] != usuario:
-            raise HTTPException(status_code=404, detail="Reconstrucción no encontrada o ya no disponible.")
-        return {k: v for k, v in estado.items() if k != "usuario"}
+def estado_reconstruccion_memoria(job_id:str,usuario:str=Depends(obtener_usuario_actual)):
+    row=_leer_reconstruccion_db(job_id)
+    if not row or row["usuario"]!=usuario: raise HTTPException(status_code=404,detail="Reconstrucción no encontrada.")
+    return _estado_publico_reconstruccion(row)
 
 
 def aplicar_titulo_generado(sesion_id: int, titulo: str):
@@ -1155,7 +1232,7 @@ def enviar_mensaje_aportacion(request: Request, payload: MensajeIn, usuario: str
 
     _inicio = time.perf_counter()
     respuesta = llamar_a_claude(
-        model=MODEL,
+        model=obtener_modelo_usuario(usuario, "entrevista"),
         max_tokens=500,
         system=SYSTEM_PROMPT_APORTACION,
         messages=mensajes,
@@ -1351,7 +1428,7 @@ def contar_palabras_usuario(mensajes: list) -> int:
 def obtener_metricas(usuario: str = Depends(obtener_usuario_actual)):
     with db() as conn:
         filas = conn.execute(
-            "SELECT id, fecha, fecha_cierre, cerrada, mensajes, tokens_input, tokens_output, titulo "
+            "SELECT id, fecha, fecha_cierre, cerrada, mensajes, tokens_input, tokens_output, titulo, modelo "
             "FROM sesiones WHERE usuario = ? AND (tipo IS NULL OR tipo = 'propia') ORDER BY id ASC",
             (usuario,),
         ).fetchall()
@@ -1373,7 +1450,8 @@ def obtener_metricas(usuario: str = Depends(obtener_usuario_actual)):
             fin = datetime.utcnow()
         duracion_segundos = max(0, int((fin - inicio).total_seconds()))
 
-        coste = calcular_coste(f["tokens_input"], f["tokens_output"])
+        modelo_sesion=f["modelo"] or obtener_modelo_usuario(usuario,"entrevista")
+        coste=coste_tokens_modelo(modelo_sesion,f["tokens_input"],f["tokens_output"])
 
         sesiones.append({
             "id": f["id"],
@@ -1385,6 +1463,8 @@ def obtener_metricas(usuario: str = Depends(obtener_usuario_actual)):
             "palabras_usuario": palabras,
             "duracion_segundos": duracion_segundos,
             "coste_estimado": round(coste, 4),
+            "modelo": modelo_sesion,
+            "nombre_modelo": nombre_modelo(modelo_sesion),
         })
 
         total_tokens_input += f["tokens_input"] or 0
@@ -1392,15 +1472,16 @@ def obtener_metricas(usuario: str = Depends(obtener_usuario_actual)):
         total_palabras += palabras
         total_segundos += duracion_segundos
 
-    total_coste = calcular_coste(total_tokens_input, total_tokens_output)
+    total_coste = sum(x["coste_estimado"] for x in sesiones)
 
     with db() as conn:
         fila_autobio = conn.execute(
-            "SELECT tokens_input, tokens_output FROM autobiografia WHERE usuario = ?", (usuario,)
+            "SELECT tokens_input, tokens_output, modelo FROM autobiografia WHERE usuario = ?", (usuario,)
         ).fetchone()
     tokens_input_autobio = fila_autobio["tokens_input"] if fila_autobio else 0
     tokens_output_autobio = fila_autobio["tokens_output"] if fila_autobio else 0
-    coste_autobio = calcular_coste(tokens_input_autobio, tokens_output_autobio)
+    modelo_autobio=fila_autobio["modelo"] if fila_autobio and fila_autobio["modelo"] else obtener_modelo_usuario(usuario,"autobiografia")
+    coste_autobio=coste_tokens_modelo(modelo_autobio,tokens_input_autobio,tokens_output_autobio)
 
     return {
         "sesiones": sesiones,
@@ -1503,9 +1584,19 @@ def borrar_mis_datos(request: Request, password: str = Form(...), usuario: str =
 def admin_listar_usuarios(request: Request, admin_password: str = Form(...)):
     requiere_admin(admin_password)
     with db() as conn:
-        filas = conn.execute("SELECT usuario, creada FROM usuarios ORDER BY creada").fetchall()
-    return [dict(f) for f in filas]
+        filas = conn.execute("SELECT usuario, creada, modelo_entrevista, modelo_autobiografia FROM usuarios ORDER BY creada").fetchall()
+    return [dict(f) | {"nombre_modelo_entrevista":nombre_modelo(f["modelo_entrevista"] or MODEL_ESTANDAR),"nombre_modelo_autobiografia":nombre_modelo(f["modelo_autobiografia"] or MODEL_ESTANDAR)} for f in filas]
 
+
+@app.post("/api/admin/configurar-modelos")
+@limiter.limit("30/hour")
+def admin_configurar_modelos(request: Request, usuario: str = Form(...), admin_password: str = Form(...), modelo_entrevista: str = Form(...), modelo_autobiografia: str = Form(...)):
+    requiere_admin(admin_password)
+    if modelo_entrevista not in MODELOS_DISPONIBLES or modelo_autobiografia not in MODELOS_DISPONIBLES: raise HTTPException(status_code=400,detail="Modelo no permitido")
+    with db() as conn:
+        if not conn.execute("SELECT 1 FROM usuarios WHERE usuario=?",(usuario,)).fetchone(): raise HTTPException(status_code=404,detail="Usuario no encontrado")
+        conn.execute("UPDATE usuarios SET modelo_entrevista=?,modelo_autobiografia=? WHERE usuario=?",(modelo_entrevista,modelo_autobiografia,usuario))
+    return {"ok":True,"usuario":usuario,"modelo_entrevista":modelo_entrevista,"modelo_autobiografia":modelo_autobiografia}
 
 @app.post("/api/admin/exportar-usuario")
 @limiter.limit("20/hour")
@@ -1628,16 +1719,48 @@ def ver_memoria(usuario: str = Depends(obtener_usuario_actual)):
     return cargar_resumen(usuario)
 
 
+@app.post("/api/memoria/editar")
+@limiter.limit("60/hour")
+def editar_memoria(payload: EditarMemoriaIn, usuario: str = Depends(obtener_usuario_actual)):
+    resumen=cargar_resumen(usuario); valor=payload.valor
+    if payload.seccion=="anio_nacimiento":
+        if valor in (None,"","null"): valor=None
+        else:
+            try: valor=int(valor)
+            except: raise HTTPException(status_code=400,detail="El año debe ser un número entero")
+        resumen["anio_nacimiento"]=valor; resumen["_manual_fields"]["anio_nacimiento"]=valor
+    elif payload.seccion=="bloques":
+        claves={"infancia","familia","lugares","estudios","trabajo","relaciones","momentos_de_cambio","valores","aficiones","otros"}
+        if payload.campo not in claves: raise HTTPException(status_code=400,detail="Bloque no válido")
+        valor=str(valor or ""); resumen.setdefault("bloques",{})[payload.campo]=valor; resumen["_manual_fields"][f"bloques.{payload.campo}"]=valor
+    elif payload.seccion=="cronologia":
+        if payload.indice is None or not 0<=payload.indice<len(resumen.get("cronologia",[])): raise HTTPException(status_code=400,detail="Evento de cronología no válido")
+        if payload.campo not in {"anio","momento","evento"}: raise HTTPException(status_code=400,detail="Campo de cronología no válido")
+        evento=resumen["cronologia"][payload.indice]; evento.setdefault("_id",secrets.token_hex(8))
+        if payload.campo=="anio":
+            if valor in (None,"","null"): valor=None
+            else:
+                try: valor=int(valor)
+                except: raise HTTPException(status_code=400,detail="El año debe ser un número entero")
+        else: valor=str(valor or "")
+        evento[payload.campo]=valor
+        manual=next((m for m in resumen["_manual_cronologia"] if m.get("id")==evento["_id"]),None)
+        if manual is None:
+            manual={"id":evento["_id"],"evento":evento.get("evento",""),"momento":evento.get("momento",""),"campos":{}}; resumen["_manual_cronologia"].append(manual)
+        manual["campos"][payload.campo]=valor; manual["evento"]=evento.get("evento",""); manual["momento"]=evento.get("momento","")
+    else: raise HTTPException(status_code=400,detail="Sección no válida")
+    guardar_resumen(usuario,resumen); return {"ok":True,"resumen":resumen}
+
 @app.get("/api/autobiografia")
 def ver_autobiografia(usuario: str = Depends(obtener_usuario_actual)):
     with db() as conn:
         row = conn.execute(
-            "SELECT contenido, fecha_generada FROM autobiografia WHERE usuario = ?",
+            "SELECT contenido, fecha_generada, modelo FROM autobiografia WHERE usuario = ?",
             (usuario,),
         ).fetchone()
     if not row:
-        return {"contenido": None, "fecha_generada": None}
-    return {"contenido": row["contenido"], "fecha_generada": row["fecha_generada"]}
+        return {"contenido": None, "fecha_generada": None, "modelo": None}
+    return {"contenido": row["contenido"], "fecha_generada": row["fecha_generada"], "modelo": row["modelo"]}
 
 
 @app.post("/api/generar-autobiografia")
@@ -1650,7 +1773,7 @@ def generar_autobiografia(usuario: str = Depends(obtener_usuario_actual)):
     _inicio = time.perf_counter()
     try:
         respuesta = llamar_a_claude(
-            model=MODEL,
+            model=obtener_modelo_usuario(usuario, "autobiografia"),
             max_tokens=8000,
             system=SYSTEM_PROMPT_AUTOBIOGRAFIA,
             messages=[{
@@ -1673,16 +1796,17 @@ def generar_autobiografia(usuario: str = Depends(obtener_usuario_actual)):
 
     with db() as conn:
         conn.execute(
-            "INSERT INTO autobiografia (usuario, contenido, fecha_generada, tokens_input, tokens_output) "
-            "VALUES (?, ?, ?, ?, ?) "
+            "INSERT INTO autobiografia (usuario, contenido, fecha_generada, tokens_input, tokens_output, modelo) "
+            "VALUES (?, ?, ?, ?, ?, ?) "
             "ON CONFLICT(usuario) DO UPDATE SET contenido = excluded.contenido, "
             "fecha_generada = excluded.fecha_generada, "
             "tokens_input = autobiografia.tokens_input + excluded.tokens_input, "
-            "tokens_output = autobiografia.tokens_output + excluded.tokens_output",
-            (usuario, contenido, fecha, respuesta.usage.input_tokens, respuesta.usage.output_tokens),
+            "tokens_output = autobiografia.tokens_output + excluded.tokens_output, "
+            "modelo = excluded.modelo",
+            (usuario, contenido, fecha, respuesta.usage.input_tokens, respuesta.usage.output_tokens, obtener_modelo_usuario(usuario, "autobiografia")),
         )
 
-    return {"contenido": contenido, "fecha_generada": fecha}
+    return {"contenido": contenido, "fecha_generada": fecha, "modelo": obtener_modelo_usuario(usuario, "autobiografia")}
 
 
 # ---------------------------------------------------------------------------
