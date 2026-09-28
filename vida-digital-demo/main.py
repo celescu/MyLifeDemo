@@ -864,7 +864,7 @@ def modelos_disponibles():
 
 @app.post("/api/registro")
 @limiter.limit("5/hour")
-def registro(payload: RegistroIn):
+def registro(request: Request, payload: RegistroIn):
     if payload.modelo_entrevista not in MODELOS_DISPONIBLES or payload.modelo_autobiografia not in MODELOS_DISPONIBLES:
         raise HTTPException(status_code=400, detail="Modelo no permitido")
     password_hash=bcrypt.hashpw(payload.password.encode(),bcrypt.gensalt()).decode()
