@@ -195,6 +195,17 @@
   .tabla-metricas th,.tabla-metricas td { text-align:left; padding:8px 6px; border-bottom:1px solid var(--linea); }
   .tabla-metricas th { color:var(--tinta-suave); font-weight:600; }
 
+  #reconstruccion-modal { position:fixed; inset:0; z-index:2000; display:none; align-items:center; justify-content:center; padding:20px; background:rgba(48,41,35,.28); }
+  #reconstruccion-panel { width:min(560px,100%); background:var(--blanco-papel); border:1px solid var(--linea); padding:30px; box-shadow:0 18px 50px rgba(48,41,35,.16); }
+  #reconstruccion-panel h3 { margin:0 0 8px; font-size:1.35rem; font-style:italic; }
+  #reconstruccion-estado { color:var(--tinta-suave); font-family:system-ui,sans-serif; font-size:.82rem; line-height:1.55; }
+  #reconstruccion-barra { height:5px; margin:18px 0 12px; background:var(--papel-oscuro); overflow:hidden; }
+  #reconstruccion-progreso { height:100%; width:0%; background:var(--sello); transition:width .35s ease; }
+  #reconstruccion-detalle { min-height:22px; color:var(--tinta-suave); font-family:system-ui,sans-serif; font-size:.72rem; }
+  #reconstruccion-tiempo { font-family:system-ui,sans-serif; font-size:.68rem; color:var(--tinta-suave); margin-top:8px; }
+  #reconstruccion-resultado { margin-top:16px; padding-top:14px; border-top:1px solid var(--linea); font-family:system-ui,sans-serif; font-size:.76rem; line-height:1.55; display:none; }
+  #reconstruccion-errores { margin:8px 0 0; padding-left:18px; color:var(--sello-oscuro); }
+
   #vista-autobiografia .libro-marco { max-width:760px; margin:0 auto; }
   #vista-autobiografia .pagina-libro {
     background: var(--blanco-papel); border:1px solid var(--linea); padding:58px clamp(30px,7vw,74px);
@@ -372,6 +383,17 @@
   <footer class="pie-privacidad">
     <a href="/seguridad.html">Privacidad y medidas de seguridad</a>
   </footer>
+</div>
+
+<div id="reconstruccion-modal" role="dialog" aria-modal="true" aria-labelledby="reconstruccion-titulo">
+  <div id="reconstruccion-panel">
+    <h3 id="reconstruccion-titulo">Reconstruyendo tus recuerdos</h3>
+    <div id="reconstruccion-estado">Preparando las conversaciones…</div>
+    <div id="reconstruccion-barra"><div id="reconstruccion-progreso"></div></div>
+    <div id="reconstruccion-detalle">La aplicación está trabajando con tus conversaciones guardadas. Puedes esperar aquí; no cierres la pestaña.</div>
+    <div id="reconstruccion-tiempo">Tiempo transcurrido: 00:00</div>
+    <div id="reconstruccion-resultado"></div>
+  </div>
 </div>
 
 <script>
@@ -1006,30 +1028,117 @@ async function borrarSesion(id, titulo, btn) {
 }
 
 async function reconstruirMemoria() {
-  const aviso =
-    'Esto va a repasar TODAS tus sesiones guardadas, de la más antigua a la ' +
-    'más reciente, y reconstruir desde cero la memoria acumulada a partir de ' +
-    'ellas. Puede tardar bastante si tienes muchas sesiones, y consume una ' +
-    'llamada a la IA por cada una (con su coste correspondiente).\n\n' +
-    '¿Quieres continuar?';
-  if (!confirm(aviso)) return;
+  if (!confirm(
+    'La aplicación va a repasar TODAS tus conversaciones guardadas, desde la más antigua, y reconstruir la memoria acumulada. ' +
+    'Cada sesión que tenga respuestas de la IA requiere una llamada al modelo y puede tardar. ' +
+    'El proceso guarda los avances a medida que trabaja.\n\n¿Quieres comenzar?'
+  )) return;
+
+  const modal = document.getElementById('reconstruccion-modal');
+  const estado = document.getElementById('reconstruccion-estado');
+  const detalle = document.getElementById('reconstruccion-detalle');
+  const progreso = document.getElementById('reconstruccion-progreso');
+  const tiempo = document.getElementById('reconstruccion-tiempo');
+  const resultado = document.getElementById('reconstruccion-resultado');
+  modal.style.display = 'flex';
+  resultado.style.display = 'none';
+  resultado.innerHTML = '';
+  progreso.style.width = '0%';
+
+  const inicio = Date.now();
+  let temporizador = null;
+  let jobId = null;
+  let terminado = false;
+
+  const actualizarTiempo = () => {
+    const segundos = Math.floor((Date.now() - inicio) / 1000);
+    const mm = String(Math.floor(segundos / 60)).padStart(2, '0');
+    const ss = String(segundos % 60).padStart(2, '0');
+    tiempo.textContent = `Tiempo transcurrido: ${mm}:${ss}`;
+  };
+  temporizador = setInterval(actualizarTiempo, 1000);
+  actualizarTiempo();
 
   try {
-    const resp = await apiFetch('/api/reconstruir_memoria', { method: 'POST' });
-    const data = await resp.json();
-    if (!resp.ok) {
-      alert('No se pudo reconstruir la memoria: ' + (data.detail || 'error desconocido'));
-      return;
+    estado.textContent = 'Iniciando reconstrucción…';
+    detalle.textContent = 'Leyendo las conversaciones guardadas y preparando el proceso.';
+    const inicioResp = await apiFetch('/api/reconstruir_memoria', { method: 'POST' });
+    const inicioData = await inicioResp.json().catch(() => ({}));
+    if (!inicioResp.ok) {
+      throw new Error(inicioData.detail || 'El servidor no pudo iniciar la reconstrucción.');
     }
-    let mensaje = `Memoria reconstruida.\n\nSesiones procesadas: ${data.sesiones_procesadas.length}\n` +
-      `Sesiones sin respuesta (omitidas): ${data.sesiones_omitidas_sin_respuesta.length}`;
-    if (data.sesiones_con_error.length > 0) {
-      mensaje += `\nSesiones con error (revisar): ${data.sesiones_con_error.map(e => e.sesion_id).join(', ')}`;
+    jobId = inicioData.job_id;
+
+    while (!terminado) {
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      const resp = await apiFetch(`/api/reconstruir_memoria/${encodeURIComponent(jobId)}`);
+      const data = await resp.json();
+      if (!resp.ok) throw new Error(data.detail || 'No se pudo consultar el progreso.');
+
+      const total = Number(data.total || 0);
+      const procesadas = Number(data.procesadas || 0);
+      const omitidas = Number(data.omitidas || 0);
+      const errores = Array.isArray(data.errores) ? data.errores : [];
+      const terminadas = procesadas + omitidas + errores.length;
+      const porcentaje = total ? Math.min(100, (terminadas / total) * 100) : 100;
+      progreso.style.width = `${porcentaje}%`;
+
+      if (data.estado === 'pendiente') {
+        estado.textContent = 'Preparando reconstrucción…';
+      } else if (data.estado === 'procesando') {
+        estado.textContent = total
+          ? `Reconstruyendo: ${terminadas} de ${total} conversaciones procesadas`
+          : 'No hay conversaciones que reconstruir.';
+      } else if (data.estado === 'completado') {
+        terminado = true;
+        progreso.style.width = '100%';
+        estado.textContent = 'Reconstrucción terminada';
+      } else if (data.estado === 'error') {
+        terminado = true;
+        estado.textContent = 'La reconstrucción no ha podido completarse';
+      }
+
+      detalle.textContent = data.mensaje || '';
+
+      if (terminado) {
+        let html = `<strong>Resultado:</strong> ${procesadas} reconstruidas, ${omitidas} omitidas y ${errores.length} con error.`;
+        if (errores.length) {
+          html += '<ul id="reconstruccion-errores">';
+          errores.forEach(e => {
+            html += `<li>Sesión ${e.sesion_id ?? '?'}: ${escapeHtml(String(e.error || 'error desconocido'))}</li>`;
+          });
+          html += '</ul>';
+        }
+        resultado.innerHTML = html;
+        resultado.style.display = 'block';
+        detalle.textContent = data.mensaje || '';
+        if (data.estado === 'completado') {
+          try { cerrarRecuerdos(); await verMemoria({target: document.getElementById('nav-recuerdos')}); } catch (_) {}
+        }
+        setTimeout(() => { modal.style.display = 'none'; }, 5000);
+      }
     }
-    alert(mensaje);
   } catch (e) {
-    alert('No se pudo reconstruir la memoria. Inténtalo de nuevo.');
+    estado.textContent = 'No se ha podido iniciar o consultar la reconstrucción';
+    detalle.textContent = e.message || 'Error desconocido.';
+    resultado.innerHTML = '<strong>Detalle:</strong> ' + escapeHtml(e.message || 'Error desconocido.');
+    resultado.style.display = 'block';
+  } finally {
+    clearInterval(temporizador);
+    if (!terminado) {
+      // Dejamos el diálogo visible para que el usuario pueda leer el error.
+      progreso.style.width = '0%';
+    }
   }
+}
+
+function escapeHtml(texto) {
+  return String(texto)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
 }
 
 async function verSesiones(ev) {
@@ -1462,6 +1571,7 @@ async function borrarMisDatos() {
     mostrarResultadoMisDatos('Hubo un problema al borrar tus datos.', true);
   }
 }
+
 
 </script>
 </body>
