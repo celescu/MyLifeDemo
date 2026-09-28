@@ -213,6 +213,22 @@
   .pagina-libro p { margin:0 0 18px; }
   .fecha-generacion { max-width:760px; margin:0 auto 14px; font-family:system-ui,sans-serif; font-size:.68rem; color:var(--tinta-suave); }
   .aviso-vacio { color:var(--tinta-suave); margin:0 0 24px; }
+  .autobio-controles { max-width:980px; margin:0 auto 20px; border-top:1px solid var(--linea); border-bottom:1px solid var(--linea); padding:16px 0; font-family:system-ui,sans-serif; }
+  .autobio-controles .fila { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+  .autobio-controles label { font-size:.75rem; color:var(--tinta-suave); }
+  .autobio-controles select,.autobio-titulo-input { border:1px solid var(--linea); background:transparent; color:var(--tinta); padding:8px 10px; font-family:system-ui,sans-serif; }
+  .autobio-estructura { max-width:980px; margin:0 auto 20px; }
+  .capitulo-tarjeta { border-top:1px solid var(--linea); padding:16px 0; }
+  .capitulo-cabecera { display:flex; gap:12px; align-items:center; justify-content:space-between; }
+  .capitulo-cabecera h3 { margin:0; font-size:1.05rem; font-weight:400; }
+  .capitulo-meta { font-family:system-ui,sans-serif; font-size:.68rem; color:var(--tinta-suave); margin-top:5px; }
+  .capitulo-enfoque { font-family:system-ui,sans-serif; font-size:.76rem; color:var(--tinta-suave); margin:8px 0; }
+  .capitulo-editor { width:100%; min-height:280px; box-sizing:border-box; margin-top:12px; padding:14px; border:1px solid var(--linea); background:var(--blanco-papel); color:var(--tinta); font:1rem/1.75 Georgia,serif; resize:vertical; }
+  .capitulo-acciones { display:flex; gap:8px; flex-wrap:wrap; margin-top:9px; }
+  .autobio-preview { background:var(--papel-oscuro); padding:14px 16px; margin:10px 0 18px; font-family:system-ui,sans-serif; font-size:.78rem; }
+  .autobio-preview ol { margin:8px 0 0 20px; padding:0; }
+  .autobio-preview li { margin:7px 0; }
+  .sorpresa-boton { margin-left:6px; }
 
   .seccion-datos { border-top:1px solid var(--linea); padding:22px 0; }
   .seccion-datos h3 { margin:0 0 7px; font-size:1.05rem; font-weight:400; }
@@ -308,7 +324,8 @@
         </div>
         <div class="acciones-principales">
           <div class="acciones-izquierda">
-            <button id="btn-enviar" class="boton-principal" onclick="enviar()">Continuar</button>
+            <button id="btn-enviar" class="boton-principal" onclick="enviar(false)">Continuar</button>
+            <button id="btn-sorprendeme" class="boton-secundario sorpresa-boton" onclick="enviar(true)">Sorpréndeme</button>
             <button id="btn-cerrar-sesion" class="boton-texto" onclick="cerrarSesion(event)">Terminar por hoy</button>
           </div>
           <div class="acciones-derecha">
@@ -344,10 +361,19 @@
     <section id="vista-autobiografia" class="bloque-vista" style="display:none;">
       <div class="vista-barra"><h2>Mi autobiografía</h2><button class="boton-texto" onclick="mostrarEntrevista()">Volver a conversar</button></div>
       <div id="fecha-autobiografia" class="fecha-generacion"></div>
-      <div class="libro-marco" id="contenido-autobiografia"></div>
-      <div class="acciones-principales" style="max-width:760px;margin:22px auto 0;">
-        <button id="btn-generar-autobiografia" class="boton-principal" onclick="generarAutobiografia()">Escribir / actualizar mi autobiografía</button>
+      <div class="autobio-controles">
+        <div class="fila">
+          <label for="autobio-tono">Tono</label>
+          <select id="autobio-tono">
+            <option value="natural">Natural</option><option value="literario">Literario</option><option value="sobrio">Sobrio</option><option value="intimo">Íntimo</option><option value="mixto">Mixto</option>
+          </select>
+          <button class="boton-secundario" onclick="previsualizarAutobiografia()">Proponer estructura</button>
+          <button class="boton-texto" onclick="generarTodosLosCapitulos()">Generar capítulos pendientes</button>
+        </div>
       </div>
+      <div id="autobio-preview" class="autobio-preview" style="display:none;"></div>
+      <div id="autobio-estructura" class="autobio-estructura"></div>
+      <div id="contenido-autobiografia" class="libro-marco"></div>
     </section>
 
     <section id="vista-mis-datos" class="bloque-vista" style="display:none;">
@@ -628,7 +654,7 @@ function alternarDictado() {
 
 inicializarDictado();
 
-async function enviar() {
+async function enviar(modoSorpresa = false) {
   if (dictadoActivo) {
     dictadoDetenidoManualmente = true;
     clearTimeout(temporizadorSilencioDictado);
@@ -653,7 +679,7 @@ async function enviar() {
     const resp = await apiFetch(endpoint, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ mensaje: texto, sesion_id: sesionId })
+      body: JSON.stringify({ mensaje: texto, sesion_id: sesionId, modo_sorpresa: modoSorpresa })
     });
     const data = await resp.json();
     sesionId = data.sesion_id;
@@ -1335,49 +1361,85 @@ function markdownSencilloAHtml(texto) {
 async function abrirAutobiografia() {
   document.getElementById('vista-entrevista').style.display = 'none';
   document.getElementById('vista-autobiografia').style.display = 'block';
-
-  const resp = await apiFetch('/api/autobiografia');
-  const data = await resp.json();
-  pintarAutobiografia(data);
-}
-
-function pintarAutobiografia(data) {
-  const contenedor = document.getElementById('contenido-autobiografia');
-  const fechaEl = document.getElementById('fecha-autobiografia');
-
-  if (!data.contenido) {
-    fechaEl.textContent = '';
-    contenedor.innerHTML = '<p class="aviso-vacio">Todavía no has generado tu autobiografía. Pulsa el botón de abajo para crear un primer borrador a partir de lo que ya has contado — puedes volver a generarla más adelante para que incluya las sesiones nuevas.</p>';
-    return;
-  }
-
-  const fecha = new Date(data.fecha_generada.endsWith('Z') ? data.fecha_generada : data.fecha_generada + 'Z');
-  fechaEl.textContent = `Generada el ${fecha.toLocaleString()}`;
-  contenedor.innerHTML = `<div class="pagina-libro">${markdownSencilloAHtml(data.contenido)}</div>`;
-}
-
-async function generarAutobiografia() {
-  const btn = document.getElementById('btn-generar-autobiografia');
-  const textoOriginal = btn.textContent;
-  btn.disabled = true;
-  btn.textContent = 'Escribiendo tu autobiografía...';
-  document.getElementById('contenido-autobiografia').innerHTML =
-    '<p class="aviso-vacio">Esto puede tardar unos segundos, se está redactando el texto completo.</p>';
   try {
-    const resp = await apiFetch('/api/generar-autobiografia', { method: 'POST' });
+    const resp = await apiFetch('/api/autobiografia');
     const data = await resp.json();
-    if (data.error) {
-      alert('Aviso: ' + data.error);
-      pintarAutobiografia({ contenido: null });
-      return;
-    }
-    pintarAutobiografia(data);
-  } catch (e) {
-    alert('Hubo un problema al generar la autobiografía. Inténtalo de nuevo.');
-  } finally {
-    btn.disabled = false;
-    btn.textContent = textoOriginal;
+    pintarAutobiografiaNueva(data);
+  } catch (e) { alert('No se pudo cargar la autobiografía.'); }
+}
+
+function pintarAutobiografiaNueva(data) {
+  const fechaEl = document.getElementById('fecha-autobiografia');
+  const estructura = document.getElementById('autobio-estructura');
+  const libro = document.getElementById('contenido-autobiografia');
+  const preview = document.getElementById('autobio-preview');
+  const proyecto = data.proyecto;
+  if (proyecto) document.getElementById('autobio-tono').value = proyecto.tono || 'natural';
+  fechaEl.textContent = proyecto ? `Última actualización: ${new Date(proyecto.fecha_actualizada + 'Z').toLocaleString()}` : '';
+
+  if (data.capitulos && data.capitulos.length) {
+    estructura.innerHTML = data.capitulos.map(cap => `
+      <article class="capitulo-tarjeta" data-capitulo="${cap.id}">
+        <div class="capitulo-cabecera"><h3>${escaparHtml(cap.titulo)}</h3><span class="capitulo-meta">${cap.estado === 'pendiente' ? 'Pendiente' : (cap.editado_manual ? 'Editado' : 'Generado')}</span></div>
+        <div class="capitulo-enfoque">${escaparHtml(cap.enfoque || '')}</div>
+        <div class="capitulo-acciones">
+          <button class="boton-secundario" onclick="generarCapitulo(${cap.id})">${cap.contenido ? 'Regenerar' : 'Generar capítulo'}</button>
+          ${cap.contenido ? `<button class="boton-texto" onclick="guardarCapitulo(${cap.id})">Guardar edición</button><button class="boton-texto" onclick="mejorarCapitulo(${cap.id},'desarrollar')">Desarrollar</button><button class="boton-texto" onclick="mejorarCapitulo(${cap.id},'literario')">Más literario</button><button class="boton-texto" onclick="mejorarCapitulo(${cap.id},'acortar')">Acortar</button>` : ''}
+        </div>
+        <textarea id="editor-cap-${cap.id}" class="capitulo-editor" placeholder="El contenido de este capítulo aparecerá aquí…">${escaparHtml(cap.contenido || '')}</textarea>
+      </article>`).join('');
+  } else if (!data.contenido) {
+    estructura.innerHTML = '<p class="aviso-vacio">Todavía no hay una estructura. Primero propone una estructura a partir de tus recuerdos; podrás modificarla antes de escribir los capítulos.</p>';
   }
+
+  if (data.contenido && !(data.capitulos && data.capitulos.length)) {
+    libro.innerHTML = `<div class="pagina-libro">${markdownSencilloAHtml(data.contenido)}</div><p class="aviso-vacio" style="margin-top:14px;">Esta es tu autobiografía anterior. La nueva edición por capítulos se puede crear sin borrar este texto.</p>`;
+  } else if (!data.capitulos || !data.capitulos.length) libro.innerHTML = '';
+  preview.style.display = 'none';
+}
+
+function escaparHtml(s) { return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+
+async function previsualizarAutobiografia() {
+  const tono = document.getElementById('autobio-tono').value;
+  const preview = document.getElementById('autobio-preview');
+  preview.style.display='block'; preview.textContent='Preparando una propuesta de estructura…';
+  try {
+    const resp = await apiFetch('/api/autobiografia/previsualizar', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({tono})});
+    const data=await resp.json(); if(data.error){preview.textContent=data.error;return;}
+    preview.innerHTML=`<strong>${escaparHtml(data.titulo)}</strong><ol>${(data.capitulos||[]).map(c=>`<li><b>${escaparHtml(c.titulo)}</b> — ${escaparHtml(c.enfoque)}</li>`).join('')}</ol><div style="margin-top:12px"><button class="boton-principal" onclick='aceptarEstructura(${JSON.stringify(JSON.stringify(data.capitulos))}, ${JSON.stringify(JSON.stringify(data.titulo))}, ${JSON.stringify(tono)})'>Usar esta estructura</button></div>`;
+  } catch(e){preview.textContent='No se pudo preparar la propuesta.';}
+}
+
+async function aceptarEstructura(capitulosJson, tituloJson, tonoJson) {
+  const capitulos=JSON.parse(capitulosJson), titulo=JSON.parse(tituloJson), tono=JSON.parse(tonoJson);
+  try {
+    const resp=await apiFetch('/api/autobiografia/proyecto',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({titulo,tono,capitulos})});
+    const data=await resp.json(); if(data.detail){alert(data.detail);return;} pintarAutobiografiaNueva(data);
+  } catch(e){alert('No se pudo guardar la estructura.');}
+}
+
+async function generarCapitulo(id) {
+  const card=document.querySelector(`[data-capitulo="${id}"]`); const btn=card?.querySelector('.capitulo-acciones button'); if(btn){btn.disabled=true;btn.textContent='Escribiendo…';}
+  try { const resp=await apiFetch(`/api/autobiografia/capitulos/${id}/generar`,{method:'POST'}); const data=await resp.json(); if(data.detail){alert(data.detail);return;} document.getElementById(`editor-cap-${id}`).value=data.contenido; await abrirAutobiografia(); }
+  catch(e){alert('No se pudo generar el capítulo.');} finally {if(btn)btn.disabled=false;}
+}
+
+async function guardarCapitulo(id) {
+  const contenido=document.getElementById(`editor-cap-${id}`).value;
+  try { const resp=await apiFetch(`/api/autobiografia/capitulos/${id}`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({contenido})}); const data=await resp.json(); if(data.detail){alert(data.detail);return;} alert('Capítulo guardado.'); }
+  catch(e){alert('No se pudo guardar el capítulo.');}
+}
+
+async function mejorarCapitulo(id, accion) {
+  if(!confirm('Esta acción sustituirá el texto actual por una nueva versión generada. Puedes volver a editarla después. ¿Continuar?')) return;
+  try { const resp=await apiFetch(`/api/autobiografia/capitulos/${id}/mejorar`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({accion})}); const data=await resp.json(); if(data.detail){alert(data.detail);return;} document.getElementById(`editor-cap-${id}`).value=data.contenido; }
+  catch(e){alert('No se pudo mejorar el capítulo.');}
+}
+
+async function generarTodosLosCapitulos() {
+  const resp=await apiFetch('/api/autobiografia'); const data=await resp.json();
+  for(const cap of (data.capitulos||[])) { if(!cap.contenido) await generarCapitulo(cap.id); }
 }
 
 function volverASesionesDesdeAutobiografia() {
