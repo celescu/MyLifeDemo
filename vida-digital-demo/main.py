@@ -683,23 +683,100 @@ def _aplicar_path_manual(obj: dict, path: str, valor):
         actual = actual[parte]
     if isinstance(actual, dict): actual[partes[-1]] = valor
 
-def _preservar_manuales(resumen_previo: dict, nuevo: dict) -> dict:
-    previo = _normalizar_resumen(resumen_previo); nuevo = _normalizar_resumen(nuevo)
-    for path, valor in previo.get("_manual_fields", {}).items(): _aplicar_path_manual(nuevo, path, valor)
+def _fusionar_memoria_acumulativa(resumen_previo: dict, nuevo: dict) -> dict:
+    """Fusiona una nueva extracción con la memoria existente sin perder historia.
+
+    La IA recibe el resumen previo y normalmente devuelve una versión completa,
+    pero no debemos depender de que lo haga perfectamente. Un bloque vacío en la
+    nueva respuesta significa "no he extraído nada nuevo en esta sesión", no
+    "borra lo que ya sabíamos". Lo mismo se aplica a la cronología: los eventos
+    anteriores se conservan y los nuevos se incorporan.
+    """
+    previo = _normalizar_resumen(resumen_previo)
+    nuevo = _normalizar_resumen(nuevo)
+
+    # Campos simples: nunca sustituir un dato existente por null/ vacío.
+    if nuevo.get("anio_nacimiento") is None and previo.get("anio_nacimiento") is not None:
+        nuevo["anio_nacimiento"] = previo["anio_nacimiento"]
+
+    # La lista de temas pendientes sí pertenece al estado actual de la entrevista.
+    # No la acumulamos ciegamente porque la nueva sesión puede haber resuelto temas.
+
+    # Bloques temáticos: un bloque vacío en la extracción nueva no borra el anterior.
+    bloques_previos = previo.get("bloques", {}) or {}
+    bloques_nuevos = nuevo.get("bloques", {}) or {}
+    for clave, valor_previo in bloques_previos.items():
+        if clave not in bloques_nuevos or not str(bloques_nuevos.get(clave) or "").strip():
+            bloques_nuevos[clave] = valor_previo
+    nuevo["bloques"] = bloques_nuevos
+
+    # Cronología acumulativa. Partimos de los eventos nuevos para permitir que la
+    # IA actualice un evento existente, pero añadimos cualquier evento previo que
+    # no tenga un equivalente razonablemente parecido.
+    cronologia_nueva = nuevo.get("cronologia", []) or []
+    cronologia_previa = previo.get("cronologia", []) or []
+
+    def firma(evento):
+        return f"{evento.get('evento','')}|{evento.get('momento','')}".strip().lower()
+
+    for evento_previo in cronologia_previa:
+        if not firma(evento_previo):
+            continue
+        if evento_previo.get("_id") and any(e.get("_id") == evento_previo.get("_id") for e in cronologia_nueva):
+            continue
+
+        base = firma(evento_previo)
+        mejor_ratio = 0.0
+        mejor_evento = None
+        for evento_nuevo in cronologia_nueva:
+            ratio = SequenceMatcher(None, base, firma(evento_nuevo)).ratio()
+            if ratio > mejor_ratio:
+                mejor_ratio, mejor_evento = ratio, evento_nuevo
+
+        # Si la IA ya ha representado el mismo acontecimiento, conservamos su
+        # versión (puede contener información nueva). Si no, reincorporamos el
+        # acontecimiento histórico que faltaba en la respuesta del modelo.
+        if mejor_ratio < 0.55:
+            conservado = json.loads(json.dumps(evento_previo, ensure_ascii=False))
+            conservado.setdefault("_id", secrets.token_hex(8))
+            cronologia_nueva.append(conservado)
+
+    # Garantizar identificadores estables para futuras ediciones manuales y
+    # ordenar solo cuando los años son conocidos. Los eventos sin año quedan al
+    # final, preservando su orden relativo.
+    for evento in cronologia_nueva:
+        evento.setdefault("_id", secrets.token_hex(8))
+    cronologia_nueva.sort(key=lambda e: (e.get("anio") is None, e.get("anio") if e.get("anio") is not None else 0))
+    nuevo["cronologia"] = cronologia_nueva
+
+    # Los campos y eventos editados manualmente tienen prioridad absoluta.
+    for path, valor in previo.get("_manual_fields", {}).items():
+        _aplicar_path_manual(nuevo, path, valor)
+
     for manual in previo.get("_manual_cronologia", []):
         candidato = next((e for e in nuevo.get("cronologia", []) if e.get("_id") == manual.get("id")), None)
         if candidato is None:
-            base=f"{manual.get('evento','')}|{manual.get('momento','')}".lower(); mejor=(0,None)
+            base = f"{manual.get('evento','')}|{manual.get('momento','')}".lower()
+            mejor = (0, None)
             for e in nuevo.get("cronologia", []):
-                actual=f"{e.get('evento','')}|{e.get('momento','')}".lower(); r=SequenceMatcher(None,base,actual).ratio()
-                if r>mejor[0]: mejor=(r,e)
-            if mejor[0]>=0.55: candidato=mejor[1]
+                actual = f"{e.get('evento','')}|{e.get('momento','')}".lower()
+                ratio = SequenceMatcher(None, base, actual).ratio()
+                if ratio > mejor[0]:
+                    mejor = (ratio, e)
+            if mejor[0] >= 0.55:
+                candidato = mejor[1]
         if candidato is not None:
-            for campo,valor in manual.get("campos",{}).items(): candidato[campo]=valor
-            candidato["_id"]=manual.get("id",candidato.get("_id",secrets.token_hex(8)))
-    nuevo["_manual_fields"]=dict(previo.get("_manual_fields",{}))
-    nuevo["_manual_cronologia"]=json.loads(json.dumps(previo.get("_manual_cronologia",[]),ensure_ascii=False))
+            for campo, valor in manual.get("campos", {}).items():
+                candidato[campo] = valor
+            candidato["_id"] = manual.get("id", candidato.get("_id", secrets.token_hex(8)))
+
+    nuevo["_manual_fields"] = dict(previo.get("_manual_fields", {}))
+    nuevo["_manual_cronologia"] = json.loads(json.dumps(previo.get("_manual_cronologia", []), ensure_ascii=False))
     return nuevo
+
+
+# Alias conservado para compatibilidad interna con versiones anteriores.
+_preservar_manuales = _fusionar_memoria_acumulativa
 
 def cargar_estrategia_entrevista(usuario: str) -> dict:
     with db() as conn:
