@@ -1,3 +1,17 @@
+
+## Cambios de esta versión definitiva
+
+- Dictado por voz sin envío automático: el texto queda editable antes de pulsar «Continuar».
+- Corrección de respuestas propias ya enviadas, tanto desde la conversación como desde la transcripción.
+- Al corregir una respuesta anterior, se descartan los turnos posteriores dependientes de ella y la sesión queda abierta para continuar desde la corrección.
+- Autobiografía con flujo explícito: elegir tono → proponer estructura → usar estructura → generar capítulos.
+- Estados visibles durante las operaciones de IA y mensajes de error claros.
+- El cambio de tono de un proyecto existente queda guardado para los capítulos futuros.
+- Generación individual o de todos los capítulos pendientes.
+- Edición manual y mejoras de cada capítulo conservadas.
+
+Esta distribución no contiene `memoria.db`. La base de datos de producción debe permanecer en el volumen de Railway.
+
 # Demo: entrevistador biográfico con memoria progresiva
 
 ## Qué es esto

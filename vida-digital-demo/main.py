@@ -568,6 +568,11 @@ class CerrarSesionIn(BaseModel):
     sesion_id: int
 
 
+class EditarMensajeIn(BaseModel):
+    indice: int = Field(..., ge=0)
+    contenido: str = Field(..., min_length=1, max_length=8000)
+
+
 class NuevaAportacionIn(BaseModel):
     nombre_aportante: str = Field(..., min_length=1, max_length=80)
     relacion: str = Field(..., min_length=1, max_length=60)
@@ -1090,6 +1095,7 @@ def enviar_mensaje(request: Request, payload: MensajeIn, usuario: str = Depends(
 
     if payload.modo_sorpresa:
         mensajes.append({"role": "user", "content": "[MODO SORPRÉNDEME] Elige ahora un hilo, persona, lugar, etapa, contraste o tema poco explorado que pueda enriquecer la historia. No preguntes de forma aleatoria: explica brevemente la conexión si hace falta y haz una sola pregunta concreta."})
+    indice_mensaje_usuario = len(mensajes)
     mensajes.append({"role": "user", "content": payload.mensaje})
 
     _inicio = time.perf_counter()
@@ -1102,6 +1108,7 @@ def enviar_mensaje(request: Request, payload: MensajeIn, usuario: str = Depends(
     )
     print(f"[tiempos] enviar_mensaje ({usuario}, sesión {sesion_id}): {time.perf_counter() - _inicio:.1f}s")
     texto = respuesta.content[0].text
+    indice_respuesta = len(mensajes)
     mensajes.append({"role": "assistant", "content": texto})
     guardar_mensajes(sesion_id, mensajes)
     sumar_tokens(sesion_id, respuesta.usage.input_tokens, respuesta.usage.output_tokens)
@@ -1116,9 +1123,17 @@ def enviar_mensaje(request: Request, payload: MensajeIn, usuario: str = Depends(
             "respuesta": texto_visible,
             "fecha_inicio": fecha_inicio,
             "cerrada_por_uso_indebido": True,
+            "mensaje_usuario_indice": indice_mensaje_usuario,
+            "respuesta_indice": indice_respuesta,
         }
 
-    return {"sesion_id": sesion_id, "respuesta": texto, "fecha_inicio": fecha_inicio}
+    return {
+        "sesion_id": sesion_id,
+        "respuesta": texto,
+        "fecha_inicio": fecha_inicio,
+        "mensaje_usuario_indice": indice_mensaje_usuario,
+        "respuesta_indice": indice_respuesta,
+    }
 
 
 def construir_resumen_desde_transcripcion(usuario: str, resumen_previo: dict, transcripcion: str, timeout: float = 100.0):
@@ -1315,6 +1330,7 @@ def enviar_mensaje_aportacion(request: Request, payload: MensajeIn, usuario: str
         )
         mensajes.append({"role": "user", "content": contexto})
 
+    indice_mensaje_usuario = len(mensajes)
     mensajes.append({"role": "user", "content": payload.mensaje})
 
     _inicio = time.perf_counter()
@@ -1327,6 +1343,7 @@ def enviar_mensaje_aportacion(request: Request, payload: MensajeIn, usuario: str
     )
     print(f"[tiempos] aportacion_mensaje ({usuario}, sesión {sesion_id}): {time.perf_counter() - _inicio:.1f}s")
     texto = respuesta.content[0].text
+    indice_respuesta = len(mensajes)
     mensajes.append({"role": "assistant", "content": texto})
     guardar_mensajes(sesion_id, mensajes)
     sumar_tokens(sesion_id, respuesta.usage.input_tokens, respuesta.usage.output_tokens)
@@ -1471,6 +1488,47 @@ def renombrar_sesion(sesion_id: int, payload: RenombrarSesionIn, usuario: str = 
     return {"ok": True, "titulo": titulo_limpio}
 
 
+@app.put("/api/sesion/{sesion_id}/mensaje")
+def editar_mensaje_sesion(sesion_id: int, payload: EditarMensajeIn, usuario: str = Depends(obtener_usuario_actual)):
+    """Edita una respuesta propia y descarta los turnos posteriores, porque
+    las respuestas de la entrevistadora que dependían del texto anterior ya
+    no representan una conversación coherente. La sesión queda reabierta para
+    que el usuario pueda continuar y, al cerrarla, actualizar la memoria."""
+    contenido = payload.contenido.strip()
+    with db() as conn:
+        row = conn.execute(
+            "SELECT id, mensajes, cerrada FROM sesiones WHERE id = ? AND usuario = ? AND (tipo IS NULL OR tipo = 'propia')",
+            (sesion_id, usuario),
+        ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Sesión no encontrada")
+        mensajes = json.loads(row["mensajes"])
+        if payload.indice >= len(mensajes):
+            raise HTTPException(status_code=400, detail="Ese mensaje ya no existe")
+        mensaje = mensajes[payload.indice]
+        if mensaje.get("role") != "user" or mensaje.get("content", "").startswith(MARCADOR_CONTEXTO_INTERNO):
+            raise HTTPException(status_code=400, detail="Solo se pueden editar tus propias respuestas")
+
+        mensajes[payload.indice]["content"] = contenido
+        mensajes = mensajes[:payload.indice + 1]
+        conn.execute(
+            "UPDATE sesiones SET mensajes = ?, cerrada = 0, fecha_cierre = NULL WHERE id = ?",
+            (json.dumps(mensajes, ensure_ascii=False), sesion_id),
+        )
+
+    return {
+        "ok": True,
+        "sesion_id": sesion_id,
+        "mensajes": [
+            {**m, "indice": i}
+            for i, m in enumerate(mensajes)
+            if not (m.get("role") == "user" and m.get("content", "").startswith(MARCADOR_CONTEXTO_INTERNO))
+        ],
+        "turnos_descartados": max(0, len(json.loads(row["mensajes"])) - payload.indice - 1),
+        "sesion_reabierta": bool(row["cerrada"]),
+    }
+
+
 @app.get("/api/sesion/{sesion_id}")
 def ver_sesion(sesion_id: int, usuario: str = Depends(obtener_usuario_actual)):
     with db() as conn:
@@ -1482,7 +1540,8 @@ def ver_sesion(sesion_id: int, usuario: str = Depends(obtener_usuario_actual)):
         return {"error": "sesión no encontrada"}
     mensajes = json.loads(row["mensajes"])
     mensajes_visibles = [
-        m for m in mensajes
+        {**m, "indice": i}
+        for i, m in enumerate(mensajes)
         if not (m["role"] == "user" and m["content"].startswith(MARCADOR_CONTEXTO_INTERNO))
     ]
     return mensajes_visibles
@@ -1869,6 +1928,10 @@ class AutobiografiaProyectoIn(BaseModel):
     capitulos: list[dict]
 
 
+class AutobiografiaTonoIn(BaseModel):
+    tono: str = "natural"
+
+
 class EditarCapituloIn(BaseModel):
     titulo: str | None = None
     enfoque: str | None = None
@@ -1941,6 +2004,19 @@ def guardar_proyecto_autobiografia(payload: AutobiografiaProyectoIn, usuario: st
                      "ON CONFLICT(usuario) DO UPDATE SET titulo=excluded.titulo, tono=excluded.tono, estructura_json=excluded.estructura_json, fecha_actualizada=excluded.fecha_actualizada",
                      (usuario, payload.titulo.strip()[:200] or "Mi autobiografía", payload.tono, json.dumps(payload.capitulos, ensure_ascii=False), ahora))
     return ver_autobiografia(usuario)
+
+
+@app.post("/api/autobiografia/tono")
+def cambiar_tono_autobiografia(payload: AutobiografiaTonoIn, usuario: str = Depends(obtener_usuario_actual)):
+    if payload.tono not in TONOS_AUTOBIOGRAFIA:
+        raise HTTPException(status_code=400, detail="Tono no permitido")
+    ahora = datetime.utcnow().isoformat()
+    with db() as conn:
+        proyecto = conn.execute("SELECT usuario FROM autobiografia_proyectos WHERE usuario = ?", (usuario,)).fetchone()
+        if not proyecto:
+            raise HTTPException(status_code=400, detail="Primero crea una estructura de autobiografía")
+        conn.execute("UPDATE autobiografia_proyectos SET tono = ?, fecha_actualizada = ? WHERE usuario = ?", (payload.tono, ahora, usuario))
+    return {"ok": True, "tono": payload.tono}
 
 
 @app.post("/api/autobiografia/capitulos/{capitulo_id}/generar")
