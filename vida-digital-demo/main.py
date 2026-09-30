@@ -23,6 +23,7 @@ import traceback
 import hashlib
 import re
 from urllib.request import Request as UrlRequest, urlopen
+from urllib.error import HTTPError, URLError
 from difflib import SequenceMatcher
 import bcrypt
 from datetime import datetime
@@ -1065,11 +1066,50 @@ def _base_publica(request: Request) -> str:
     return PUBLIC_BASE_URL or str(request.base_url).rstrip("/")
 
 def enviar_email(destinatario: str, asunto: str, html: str):
-    if not RESEND_API_KEY: raise RuntimeError("RESEND_API_KEY no está configurada")
-    payload=json.dumps({"from":EMAIL_FROM,"to":[destinatario],"subject":asunto,"html":html}).encode()
-    req=UrlRequest("https://api.resend.com/emails",data=payload,method="POST",headers={"Authorization":f"Bearer {RESEND_API_KEY}","Content-Type":"application/json"})
-    with urlopen(req,timeout=20) as resp:
-        if resp.status < 200 or resp.status >= 300: raise RuntimeError(f"Resend HTTP {resp.status}")
+    """Envía correo mediante Resend y deja el motivo real del fallo en Railway.
+
+    Nunca se registra la API key. En caso de error HTTP se registra el código
+    y el cuerpo devuelto por Resend, que normalmente contiene el diagnóstico
+    útil (dominio no verificado, remitente no permitido, API key inválida, etc.).
+    """
+    if not RESEND_API_KEY:
+        print("[EMAIL] ERROR: RESEND_API_KEY no está configurada")
+        raise RuntimeError("RESEND_API_KEY no está configurada")
+
+    payload=json.dumps({
+        "from": EMAIL_FROM,
+        "to": [destinatario],
+        "subject": asunto,
+        "html": html,
+    }).encode("utf-8")
+    req=UrlRequest(
+        "https://api.resend.com/emails",
+        data=payload,
+        method="POST",
+        headers={
+            "Authorization": f"Bearer {RESEND_API_KEY}",
+            "Content-Type": "application/json",
+        },
+    )
+
+    try:
+        with urlopen(req, timeout=20) as resp:
+            body=resp.read().decode("utf-8", errors="replace")
+            if 200 <= resp.status < 300:
+                print(f"[EMAIL] Resend aceptó el envío para {destinatario} (HTTP {resp.status})")
+                return
+            print(f"[EMAIL] Resend respondió HTTP {resp.status}: {body}")
+            raise RuntimeError(f"Resend HTTP {resp.status}: {body}")
+    except HTTPError as exc:
+        body=exc.read().decode("utf-8", errors="replace")
+        print(f"[EMAIL] Resend respondió HTTP {exc.code}: {body}")
+        raise RuntimeError(f"Resend HTTP {exc.code}: {body}") from exc
+    except URLError as exc:
+        print(f"[EMAIL] Error de conexión con Resend: {exc}")
+        raise RuntimeError(f"No se pudo conectar con Resend: {exc}") from exc
+    except TimeoutError as exc:
+        print(f"[EMAIL] Timeout conectando con Resend: {exc}")
+        raise RuntimeError("Tiempo de espera agotado al conectar con Resend") from exc
 
 def crear_token_cuenta(usuario: str, tipo: str, minutos: int) -> str:
     token=secrets.token_urlsafe(32); ahora=datetime.utcnow(); expira=datetime.fromtimestamp(ahora.timestamp()+minutos*60).isoformat()
@@ -1112,9 +1152,14 @@ def registro(request: Request, payload: RegistroIn):
         if conn.execute("SELECT 1 FROM usuarios WHERE usuario=?",(payload.usuario,)).fetchone(): raise HTTPException(status_code=400,detail="Ese nombre de usuario ya existe")
         if conn.execute("SELECT 1 FROM usuarios WHERE lower(email)=?",(payload.email,)).fetchone(): raise HTTPException(status_code=400,detail="Ese correo ya está asociado a una cuenta")
         conn.execute("INSERT INTO usuarios(usuario,password_hash,creada,modelo_entrevista,modelo_autobiografia,email,email_verificado) VALUES(?,?,?,?,?,?,0)",(payload.usuario,password_hash,datetime.utcnow().isoformat(),payload.modelo_entrevista,payload.modelo_autobiografia,payload.email))
-    try: enviar_verificacion_email(request,payload.usuario,payload.email)
-    except Exception:
-        with db() as conn: conn.execute("DELETE FROM usuarios WHERE usuario=?",(payload.usuario,))
+    try:
+        enviar_verificacion_email(request,payload.usuario,payload.email)
+    except Exception as exc:
+        print(f"[ERROR] registro: no se pudo enviar el correo de verificación a {payload.email}: {exc}")
+        traceback.print_exc()
+        with db() as conn:
+            conn.execute("DELETE FROM tokens_cuenta WHERE usuario=?",(payload.usuario,))
+            conn.execute("DELETE FROM usuarios WHERE usuario=?",(payload.usuario,))
         raise HTTPException(status_code=503,detail="No se ha podido enviar el correo de verificación. La cuenta no se ha creado; inténtalo de nuevo más tarde.")
     return {"ok":True,"requiere_verificacion":True}
 
