@@ -1222,7 +1222,7 @@ def eliminar_cuenta(request: Request, password: str = Form(...), usuario: str = 
 
 @app.post("/api/cuenta/eliminar")
 @limiter.limit("3/hour")
-def eliminar_cuenta(password: str = Form(...), usuario: str = Depends(obtener_usuario_actual)):
+def eliminar_cuenta(request: Request, password: str = Form(...), usuario: str = Depends(obtener_usuario_actual)):
     with db() as conn: row=conn.execute("SELECT password_hash FROM usuarios WHERE usuario=?",(usuario,)).fetchone()
     if not row or not bcrypt.checkpw(password.encode(),row["password_hash"].encode()): raise HTTPException(status_code=403,detail="Contraseña incorrecta")
     borrar_datos_usuario(usuario)
