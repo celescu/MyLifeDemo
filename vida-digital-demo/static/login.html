@@ -32,7 +32,7 @@
   <main class="login">
     <div class="marca">Memoricorde</div>
     <h1>Volver a tu historia</h1>
-    <p class="intro">Continúa la conversación allí donde la dejaste.</p>
+    <p class="intro">Continúa la conversación allí donde la dejaste.</p><div id="aviso" style="font: .78rem system-ui,sans-serif;color:#6B5F4F;margin-bottom:18px;display:none"></div>
     <form id="form-login">
       <label for="usuario">Usuario</label>
       <input type="text" id="usuario" autocomplete="username" required>
@@ -40,10 +40,20 @@
       <input type="password" id="password" autocomplete="current-password" required>
       <button type="submit" id="btn-entrar">Continuar</button>
     </form>
+    <div style="margin-top:14px;font:.72rem system-ui"><a href="#" id="olvido">He olvidado mi contraseña</a> · <a href="#" id="reenviar">Reenviar verificación</a></div>
     <p id="error"></p>
     <p class="pie"><a href="/registro.html">Crear una cuenta</a> &nbsp;·&nbsp; <a href="/">← Volver a la presentación</a> &nbsp;·&nbsp; <a href="/seguridad.html">Privacidad y seguridad</a></p>
   </main>
 <script>
+
+  const params = new URLSearchParams(location.search);
+  const aviso=document.getElementById('aviso');
+  if(params.get('verificado')==='1'){aviso.textContent='Correo verificado. Ya puedes entrar.';aviso.style.display='block';}
+  if(params.get('registrado')==='1'){aviso.textContent='Cuenta creada. Revisa tu correo para verificarla antes de entrar.';aviso.style.display='block';}
+  if(params.get('error')==='verificacion_invalida'){aviso.textContent='El enlace de verificación no es válido o ha caducado.';aviso.style.display='block';}
+  document.getElementById('olvido').onclick=async e=>{e.preventDefault();const email=prompt('Escribe el correo asociado a tu cuenta:');if(!email)return;const r=await fetch('/api/solicitar-reset-password',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email,password:'x'})});const d=await r.json().catch(()=>({}));aviso.textContent=d.mensaje||'Si existe una cuenta con ese correo, recibirás instrucciones.';aviso.style.display='block';};
+  document.getElementById('reenviar').onclick=async e=>{e.preventDefault();const usuario=document.getElementById('usuario').value;const password=document.getElementById('password').value;if(!usuario||!password){aviso.textContent='Escribe primero tu usuario y contraseña.';aviso.style.display='block';return;}const r=await fetch('/api/reenviar-verificacion',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({usuario,password})});const d=await r.json().catch(()=>({}));aviso.textContent=d.mensaje||'Si la cuenta necesita verificación, se ha enviado un nuevo correo.';aviso.style.display='block';};
+
 document.getElementById('form-login').addEventListener('submit', async (ev) => {
   ev.preventDefault();
   const btn = document.getElementById('btn-entrar');

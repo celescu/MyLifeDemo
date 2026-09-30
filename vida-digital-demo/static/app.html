@@ -378,7 +378,7 @@
             <option value="natural">Natural</option><option value="literario">Literario</option><option value="sobrio">Sobrio</option><option value="intimo">Íntimo</option><option value="mixto">Mixto</option>
           </select>
           <button id="btn-proponer-estructura" class="boton-principal" onclick="previsualizarAutobiografia()">Proponer estructura</button>
-          <button id="btn-generar-pendientes" class="boton-secundario" onclick="generarTodosLosCapitulos()" style="display:none;">Generar capítulos pendientes</button>
+          <button id="btn-generar-pendientes" class="boton-secundario" onclick="generarTodosLosCapitulos()" style="display:none;">Generar capítulos pendientes</button><button id="btn-generar-completa" class="boton-principal" onclick="generarAutobiografiaCompleta()" style="display:none;">Generar autobiografía completa</button>
         </div>
       </div>
       <div id="autobio-status" class="autobio-status" style="display:none;"></div>
@@ -389,7 +389,19 @@
 
     <section id="vista-mis-datos" class="bloque-vista" style="display:none;">
       <div class="vista-barra"><h2>Privacidad y datos</h2><button class="boton-texto" onclick="mostrarEntrevista()">Volver a conversar</button></div>
-      <p class="subtitulo-seccion" style="margin-bottom:26px;">Tus datos son tuyos. Puedes descargar una copia, restaurarla o eliminar tus contenidos.</p>
+      <p class="subtitulo-seccion" style="margin-bottom:26px;">Tus datos son tuyos. Puedes gestionar tu correo y contraseña, descargar una copia, restaurarla o eliminar tu cuenta.</p>
+
+      <div class="seccion-datos">
+        <h3>Mi cuenta</h3>
+        <p id="estado-cuenta">Cargando…</p>
+        <input type="email" id="nuevo-email" placeholder="Nueva dirección de correo" autocomplete="email" style="display:block;margin-bottom:9px;max-width:360px;">
+        <input type="password" id="password-email" placeholder="Contraseña actual" autocomplete="current-password" style="display:block;margin-bottom:9px;max-width:360px;">
+        <button class="boton-secundario" onclick="cambiarMiEmail()">Cambiar correo</button>
+        <div style="height:18px"></div>
+        <input type="password" id="password-actual" placeholder="Contraseña actual" autocomplete="current-password" style="display:block;margin-bottom:9px;max-width:360px;">
+        <input type="password" id="password-nueva" placeholder="Nueva contraseña (mínimo 10 caracteres)" autocomplete="new-password" style="display:block;margin-bottom:9px;max-width:360px;">
+        <button class="boton-secundario" onclick="cambiarMiPassword()">Cambiar contraseña</button>
+      </div>
 
       <div class="seccion-datos">
         <h3>Descargar mis datos</h3>
@@ -402,6 +414,12 @@
         <input type="file" id="archivo-mis-datos" accept=".json" style="display:block;margin-bottom:9px;">
         <input type="password" id="password-restaurar-mios" placeholder="Tu contraseña" style="display:block;margin-bottom:9px;">
         <button class="boton-secundario" onclick="restaurarMisDatos()">Restaurar mis datos</button>
+      </div>
+      <div class="seccion-datos seccion-peligro">
+        <h3>Eliminar mi cuenta</h3>
+        <p>Esta acción elimina permanentemente tu cuenta y todos los datos asociados. No se puede deshacer.</p>
+        <input type="password" id="password-eliminar-cuenta" placeholder="Tu contraseña" style="display:block;margin-bottom:9px;">
+        <button class="boton-secundario" onclick="eliminarMiCuenta()">Eliminar mi cuenta y mis datos</button>
       </div>
       <div class="seccion-datos seccion-peligro">
         <h3>Eliminar mis datos</h3>
@@ -1502,12 +1520,14 @@ function pintarAutobiografiaNueva(data) {
   const libro = document.getElementById('contenido-autobiografia');
   const preview = document.getElementById('autobio-preview');
   const btnPendientes = document.getElementById('btn-generar-pendientes');
+  const btnCompleta = document.getElementById('btn-generar-completa');
   const proyecto = data.proyecto;
   if (proyecto) document.getElementById('autobio-tono').value = proyecto.tono || 'natural';
   fechaEl.textContent = proyecto ? `Última actualización: ${new Date(proyecto.fecha_actualizada + 'Z').toLocaleString()}` : '';
 
   if (data.capitulos && data.capitulos.length) {
     btnPendientes.style.display='inline-block';
+    btnCompleta.style.display=data.capitulos.every(c=>!!(c.contenido||'').trim()) ? 'inline-block' : 'none';
     estructura.innerHTML = data.capitulos.map(cap => `
       <article class="capitulo-tarjeta" data-capitulo="${cap.id}">
         <div class="capitulo-cabecera"><h3>${escaparHtml(cap.titulo)}</h3><span class="capitulo-meta">${cap.estado === 'pendiente' ? 'Pendiente de escribir' : (cap.editado_manual ? 'Editado por ti' : 'Generado')}</span></div>
@@ -1520,6 +1540,7 @@ function pintarAutobiografiaNueva(data) {
       </article>`).join('');
   } else {
     btnPendientes.style.display='none';
+    btnCompleta.style.display='none';
     estructura.innerHTML = '<p class="aviso-vacio">Todavía no hay una estructura. Elige un tono y pulsa «Proponer estructura» para que la aplicación prepare una propuesta a partir de tus recuerdos.</p>';
   }
 
@@ -1618,6 +1639,15 @@ async function generarTodosLosCapitulos() {
   } catch(e){setAutobioStatus(e.message||'El proceso se ha detenido por un error.',true);} finally {btn.disabled=false;}
 }
 
+async function generarAutobiografiaCompleta(){
+  const btn=document.getElementById('btn-generar-completa');
+  if(!confirm('Se creará una versión completa de la autobiografía a partir de los capítulos actuales. Los capítulos originales no se modificarán. ¿Continuar?')) return;
+  btn.disabled=true;btn.textContent='Unificando el libro…';setAutobioStatus('La IA está unificando los capítulos y trabajando las transiciones. Puede tardar un poco…');
+  try{const r=await apiFetch('/api/autobiografia/generar-completa',{method:'POST'});const d=await r.json();if(!r.ok)throw new Error(d.detail||'No se pudo generar la autobiografía completa.');await abrirAutobiografia();setAutobioStatus('Autobiografía completa generada. Los capítulos siguen disponibles para futuras ediciones.');}
+  catch(e){setAutobioStatus(e.message||'No se pudo generar la autobiografía completa.',true);}
+  finally{btn.disabled=false;btn.textContent='Generar autobiografía completa';}
+}
+
 function volverASesionesDesdeAutobiografia() {
   document.getElementById('vista-autobiografia').style.display = 'none';
   document.getElementById('vista-entrevista').style.display = 'block';
@@ -1629,7 +1659,14 @@ function abrirMisDatos() {
   document.getElementById('vista-entrevista').style.display = 'none';
   document.getElementById('vista-mis-datos').style.display = 'block';
   document.getElementById('resultado-mis-datos').textContent = '';
+  cargarCuenta();
 }
+
+async function cargarCuenta(){try{const r=await apiFetch('/api/cuenta');const d=await r.json();document.getElementById('estado-cuenta').textContent=d.email ? `Correo: ${d.email} — ${d.email_verificado?'verificado':'pendiente de verificación'}` : 'Esta cuenta no tiene un correo asociado.';}catch(e){document.getElementById('estado-cuenta').textContent='No se pudo cargar la información de la cuenta.';}}
+
+async function cambiarMiEmail(){const email=document.getElementById('nuevo-email').value.trim();const password=document.getElementById('password-email').value;if(!email||!password){mostrarResultadoMisDatos('Escribe el nuevo correo y tu contraseña actual.',true);return;}try{const r=await apiFetch('/api/cuenta/cambiar-email',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email,password})});const d=await r.json();mostrarResultadoMisDatos(r.ok?'Te hemos enviado un correo para confirmar la nueva dirección.':formatearDetalle(d),!r.ok);if(r.ok){document.getElementById('nuevo-email').value='';document.getElementById('password-email').value='';cargarCuenta();}}catch(e){mostrarResultadoMisDatos('No se pudo cambiar el correo.',true);}}
+
+async function cambiarMiPassword(){const actual=document.getElementById('password-actual').value,nueva=document.getElementById('password-nueva').value;if(!actual||!nueva){mostrarResultadoMisDatos('Escribe la contraseña actual y la nueva.',true);return;}try{const r=await apiFetch('/api/cuenta/cambiar-password',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password_actual:actual,password_nueva:nueva})});const d=await r.json();mostrarResultadoMisDatos(r.ok?'Contraseña actualizada.':formatearDetalle(d),!r.ok);if(r.ok){document.getElementById('password-actual').value='';document.getElementById('password-nueva').value='';}}catch(e){mostrarResultadoMisDatos('No se pudo cambiar la contraseña.',true);}}
 
 function volverASesionesDesdeMisDatos() {
   document.getElementById('vista-mis-datos').style.display = 'none';
@@ -1687,6 +1724,13 @@ async function restaurarMisDatos() {
   } catch (e) {
     mostrarResultadoMisDatos('Hubo un problema al restaurar tus datos.', true);
   }
+}
+
+async function eliminarMiCuenta(){
+  const password=document.getElementById('password-eliminar-cuenta').value;if(!password){mostrarResultadoMisDatos('Escribe tu contraseña para confirmar.',true);return;}
+  if(!confirm('Esto ELIMINARÁ DEFINITIVAMENTE tu cuenta y todos tus datos. No podrás recuperarlos. ¿Estás seguro?'))return;
+  try{const fd=new FormData();fd.append('password',password);const r=await apiFetch('/api/cuenta/eliminar',{method:'POST',body:fd});const d=await r.json();if(!r.ok){mostrarResultadoMisDatos(formatearDetalle(d),true);return;}alert('Tu cuenta y tus datos han sido eliminados.');window.location.href='/login.html';}
+  catch(e){mostrarResultadoMisDatos('No se pudo eliminar la cuenta.',true);}
 }
 
 async function borrarMisDatos() {
