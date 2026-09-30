@@ -1184,7 +1184,7 @@ def solicitar_reset_password(request: Request, payload: EmailCuentaIn):
 
 @app.post("/api/restablecer-contrasena")
 @limiter.limit("10/hour")
-def restablecer_contrasena(payload: ResetPasswordIn):
+def restablecer_contrasena(request: Request, payload: ResetPasswordIn):
     validar_password_nueva(payload.password_nueva); usuario=consumir_token_cuenta(payload.token,"reset_password")
     if not usuario: raise HTTPException(status_code=400,detail="El enlace no es válido o ha caducado.")
     nuevo=bcrypt.hashpw(payload.password_nueva.encode(),bcrypt.gensalt()).decode()
@@ -1198,7 +1198,7 @@ def cuenta_actual(usuario: str = Depends(obtener_usuario_actual)):
 
 @app.post("/api/cuenta/cambiar-password")
 @limiter.limit("10/hour")
-def cambiar_password(payload: CambiarPasswordIn, usuario: str = Depends(obtener_usuario_actual)):
+def cambiar_password(request: Request, payload: CambiarPasswordIn, usuario: str = Depends(obtener_usuario_actual)):
     validar_password_nueva(payload.password_nueva)
     with db() as conn: row=conn.execute("SELECT password_hash FROM usuarios WHERE usuario=?",(usuario,)).fetchone()
     if not row or not bcrypt.checkpw(payload.password_actual.encode(),row["password_hash"].encode()): raise HTTPException(status_code=403,detail="Contraseña actual incorrecta")
@@ -1222,7 +1222,7 @@ def cambiar_email(request: Request, payload: EmailCuentaIn, usuario: str = Depen
 
 @app.post("/api/cuenta/eliminar")
 @limiter.limit("3/hour")
-def eliminar_cuenta(password: str = Form(...), usuario: str = Depends(obtener_usuario_actual)):
+def eliminar_cuenta(request: Request, password: str = Form(...), usuario: str = Depends(obtener_usuario_actual)):
     with db() as conn: row=conn.execute("SELECT password_hash FROM usuarios WHERE usuario=?",(usuario,)).fetchone()
     if not row or not bcrypt.checkpw(password.encode(),row["password_hash"].encode()): raise HTTPException(status_code=403,detail="Contraseña incorrecta")
     borrar_datos_usuario(usuario)
