@@ -20,6 +20,9 @@ import secrets
 import time
 import threading
 import traceback
+import hashlib
+import re
+from urllib.request import Request as UrlRequest, urlopen
 from difflib import SequenceMatcher
 import bcrypt
 from datetime import datetime
@@ -33,7 +36,7 @@ import sqlcipher3  # cifrado en reposo de la base de datos
 
 from fastapi import FastAPI, Request, Response, Depends, HTTPException, UploadFile, File, Form
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from pydantic import BaseModel, Field, field_validator
 from slowapi import Limiter, _rate_limit_exceeded_handler
@@ -78,6 +81,9 @@ LIMITE_TURNOS_POR_SESION = int(os.environ.get("LIMITE_TURNOS_POR_SESION", "50"))
 
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD")
 ADMIN_USERNAME = os.environ.get("ADMIN_USERNAME", "yo")
+RESEND_API_KEY = os.environ.get("RESEND_API_KEY")
+EMAIL_FROM = os.environ.get("EMAIL_FROM", "Memoricorde <cuenta@memoricorde.com>")
+PUBLIC_BASE_URL = os.environ.get("PUBLIC_BASE_URL", "").rstrip("/")
 
 ENTORNO = os.environ.get("ENTORNO", "development").lower()
 
@@ -342,6 +348,12 @@ def init_db_sobre(conn):
         )
     """)
     conn.execute("""
+        CREATE TABLE IF NOT EXISTS tokens_cuenta (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, usuario TEXT NOT NULL, tipo TEXT NOT NULL,
+            token_hash TEXT NOT NULL UNIQUE, expira TEXT NOT NULL, usado INTEGER NOT NULL DEFAULT 0, creado TEXT NOT NULL
+        )
+    """)
+    conn.execute("""
         CREATE TABLE IF NOT EXISTS autobiografia (
             usuario TEXT PRIMARY KEY,
             contenido TEXT NOT NULL,
@@ -419,10 +431,11 @@ def init_db_sobre(conn):
         if columna not in columnas_existentes:
             conn.execute(f"ALTER TABLE sesiones ADD COLUMN {columna} {definicion}")
     columnas_usuarios = {fila[1] for fila in conn.execute("PRAGMA table_info(usuarios)").fetchall()}
-    for columna in ("modelo_entrevista", "modelo_autobiografia"):
+    for columna, definicion in (("modelo_entrevista", "TEXT"), ("modelo_autobiografia", "TEXT"), ("email", "TEXT"), ("email_verificado", "INTEGER DEFAULT 0")):
         if columna not in columnas_usuarios:
-            conn.execute(f"ALTER TABLE usuarios ADD COLUMN {columna} TEXT")
+            conn.execute(f"ALTER TABLE usuarios ADD COLUMN {columna} {definicion}")
     conn.execute("UPDATE usuarios SET modelo_entrevista = COALESCE(modelo_entrevista, ?), modelo_autobiografia = COALESCE(modelo_autobiografia, ?)", (MODEL_LEGACY, MODEL_LEGACY))
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_usuarios_email_unico ON usuarios(lower(email)) WHERE email IS NOT NULL")
     columnas_autobiografia = {fila[1] for fila in conn.execute("PRAGMA table_info(autobiografia)").fetchall()}
     if "modelo" not in columnas_autobiografia:
         conn.execute("ALTER TABLE autobiografia ADD COLUMN modelo TEXT")
@@ -612,8 +625,33 @@ class CrearUsuarioIn(CrearUsuarioBase):
     admin_password: str
 
 class RegistroIn(CrearUsuarioBase):
+    email: str = Field(..., min_length=5, max_length=254)
     modelo_entrevista: str = MODEL_ESTANDAR
     modelo_autobiografia: str = MODEL_ESTANDAR
+    @field_validator("email")
+    @classmethod
+    def email_valido(cls, v: str) -> str:
+        v=v.strip().lower()
+        if not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", v): raise ValueError("Introduce una dirección de correo válida")
+        return v
+
+class EmailCuentaIn(BaseModel):
+    email: str = Field(..., min_length=5, max_length=254)
+    password: str = Field(..., min_length=1, max_length=256)
+    @field_validator("email")
+    @classmethod
+    def email_valido(cls, v: str) -> str:
+        v=v.strip().lower()
+        if not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", v): raise ValueError("Introduce una dirección de correo válida")
+        return v
+
+class CambiarPasswordIn(BaseModel):
+    password_actual: str = Field(..., min_length=1, max_length=256)
+    password_nueva: str = Field(..., min_length=10, max_length=256)
+
+class ResetPasswordIn(BaseModel):
+    token: str = Field(..., min_length=20, max_length=256)
+    password_nueva: str = Field(..., min_length=10, max_length=256)
 
 
 # ---------------------------------------------------------------------------
@@ -989,7 +1027,7 @@ def restaurar_datos_usuario(usuario: str, datos: dict):
 def verificar_password_de(usuario: str, password: str) -> bool:
     with db() as conn:
         row = conn.execute(
-            "SELECT password_hash FROM usuarios WHERE usuario = ?", (usuario,)
+            "SELECT password_hash, email, email_verificado FROM usuarios WHERE usuario = ?", (usuario,)
         ).fetchone()
     if not row:
         return False
@@ -1017,6 +1055,47 @@ def obtener_usuario_actual(request: Request) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Correo y tokens de cuenta
+# ---------------------------------------------------------------------------
+
+def _hash_token(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+def _base_publica(request: Request) -> str:
+    return PUBLIC_BASE_URL or str(request.base_url).rstrip("/")
+
+def enviar_email(destinatario: str, asunto: str, html: str):
+    if not RESEND_API_KEY: raise RuntimeError("RESEND_API_KEY no está configurada")
+    payload=json.dumps({"from":EMAIL_FROM,"to":[destinatario],"subject":asunto,"html":html}).encode()
+    req=UrlRequest("https://api.resend.com/emails",data=payload,method="POST",headers={"Authorization":f"Bearer {RESEND_API_KEY}","Content-Type":"application/json"})
+    with urlopen(req,timeout=20) as resp:
+        if resp.status < 200 or resp.status >= 300: raise RuntimeError(f"Resend HTTP {resp.status}")
+
+def crear_token_cuenta(usuario: str, tipo: str, minutos: int) -> str:
+    token=secrets.token_urlsafe(32); ahora=datetime.utcnow(); expira=datetime.fromtimestamp(ahora.timestamp()+minutos*60).isoformat()
+    with db() as conn:
+        conn.execute("UPDATE tokens_cuenta SET usado=1 WHERE usuario=? AND tipo=? AND usado=0",(usuario,tipo))
+        conn.execute("INSERT INTO tokens_cuenta(usuario,tipo,token_hash,expira,creado) VALUES(?,?,?,?,?)",(usuario,tipo,_hash_token(token),expira,ahora.isoformat()))
+    return token
+
+def consumir_token_cuenta(token: str, tipo: str):
+    with db() as conn:
+        row=conn.execute("SELECT id,usuario,expira,usado FROM tokens_cuenta WHERE token_hash=? AND tipo=?",(_hash_token(token),tipo)).fetchone()
+        if not row or row["usado"] or row["expira"] < datetime.utcnow().isoformat(): return None
+        conn.execute("UPDATE tokens_cuenta SET usado=1 WHERE id=?",(row["id"],)); return row["usuario"]
+
+def validar_password_nueva(password: str):
+    if len(password)<10 or password.lower() in {"1234567890","password","contraseña","qwertyuiop","0000000000"}: raise HTTPException(status_code=400,detail="La nueva contraseña debe tener al menos 10 caracteres y no ser demasiado común")
+
+def enviar_verificacion_email(request: Request, usuario: str, email: str):
+    token=crear_token_cuenta(usuario,"verificacion_email",1440); enlace=f"{_base_publica(request)}/api/verificar-email?token={token}"
+    enviar_email(email,"Verifica tu cuenta de Memoricorde",f'<p>Hola,</p><p>Confirma tu dirección de correo para activar tu cuenta:</p><p><a href="{enlace}">Verificar mi correo</a></p><p>El enlace caduca en 24 horas y solo puede utilizarse una vez.</p>')
+
+def enviar_reset_password(request: Request, usuario: str, email: str):
+    token=crear_token_cuenta(usuario,"reset_password",60); enlace=f"{_base_publica(request)}/restablecer.html?token={token}"
+    enviar_email(email,"Restablecer tu contraseña de Memoricorde",f'<p>Hola,</p><p>Puedes establecer una nueva contraseña aquí:</p><p><a href="{enlace}">Restablecer contraseña</a></p><p>El enlace caduca en 1 hora y solo puede utilizarse una vez.</p>')
+
+# ---------------------------------------------------------------------------
 # Autenticación
 # ---------------------------------------------------------------------------
 
@@ -1027,15 +1106,33 @@ def modelos_disponibles():
 @app.post("/api/registro")
 @limiter.limit("5/hour")
 def registro(request: Request, payload: RegistroIn):
-    if payload.modelo_entrevista not in MODELOS_DISPONIBLES or payload.modelo_autobiografia not in MODELOS_DISPONIBLES:
-        raise HTTPException(status_code=400, detail="Modelo no permitido")
+    if payload.modelo_entrevista not in MODELOS_DISPONIBLES or payload.modelo_autobiografia not in MODELOS_DISPONIBLES: raise HTTPException(status_code=400,detail="Modelo no permitido")
     password_hash=bcrypt.hashpw(payload.password.encode(),bcrypt.gensalt()).decode()
     with db() as conn:
-        if conn.execute("SELECT 1 FROM usuarios WHERE usuario=?",(payload.usuario,)).fetchone():
-            raise HTTPException(status_code=400,detail="Ese nombre de usuario ya existe")
-        conn.execute("INSERT INTO usuarios (usuario,password_hash,creada,modelo_entrevista,modelo_autobiografia) VALUES (?,?,?,?,?)",
-                     (payload.usuario,password_hash,datetime.utcnow().isoformat(),payload.modelo_entrevista,payload.modelo_autobiografia))
-    return {"ok":True}
+        if conn.execute("SELECT 1 FROM usuarios WHERE usuario=?",(payload.usuario,)).fetchone(): raise HTTPException(status_code=400,detail="Ese nombre de usuario ya existe")
+        if conn.execute("SELECT 1 FROM usuarios WHERE lower(email)=?",(payload.email,)).fetchone(): raise HTTPException(status_code=400,detail="Ese correo ya está asociado a una cuenta")
+        conn.execute("INSERT INTO usuarios(usuario,password_hash,creada,modelo_entrevista,modelo_autobiografia,email,email_verificado) VALUES(?,?,?,?,?,?,0)",(payload.usuario,password_hash,datetime.utcnow().isoformat(),payload.modelo_entrevista,payload.modelo_autobiografia,payload.email))
+    try: enviar_verificacion_email(request,payload.usuario,payload.email)
+    except Exception:
+        with db() as conn: conn.execute("DELETE FROM usuarios WHERE usuario=?",(payload.usuario,))
+        raise HTTPException(status_code=503,detail="No se ha podido enviar el correo de verificación. La cuenta no se ha creado; inténtalo de nuevo más tarde.")
+    return {"ok":True,"requiere_verificacion":True}
+
+@app.get("/api/verificar-email")
+def verificar_email(token: str):
+    usuario=consumir_token_cuenta(token,"verificacion_email")
+    if not usuario: return RedirectResponse(url="/login.html?error=verificacion_invalida",status_code=303)
+    with db() as conn: conn.execute("UPDATE usuarios SET email_verificado=1 WHERE usuario=?",(usuario,))
+    return RedirectResponse(url="/login.html?verificado=1",status_code=303)
+
+@app.post("/api/reenviar-verificacion")
+@limiter.limit("3/hour")
+def reenviar_verificacion(request: Request, payload: LoginIn):
+    with db() as conn: row=conn.execute("SELECT usuario,email,email_verificado,password_hash FROM usuarios WHERE usuario=?",(payload.usuario,)).fetchone()
+    if row and row["email"] and not row["email_verificado"] and bcrypt.checkpw(payload.password.encode(),row["password_hash"].encode()):
+        try: enviar_verificacion_email(request,row["usuario"],row["email"])
+        except Exception: pass
+    return {"ok":True,"mensaje":"Si la cuenta necesita verificación, se ha enviado un nuevo correo."}
 
 @app.get("/api/whoami")
 def whoami(usuario: str = Depends(obtener_usuario_actual)):
@@ -1047,7 +1144,7 @@ def whoami(usuario: str = Depends(obtener_usuario_actual)):
 def login(request: Request, payload: LoginIn, response: Response):
     with db() as conn:
         row = conn.execute(
-            "SELECT password_hash FROM usuarios WHERE usuario = ?", (payload.usuario,)
+            "SELECT password_hash, email, email_verificado FROM usuarios WHERE usuario = ?", (payload.usuario,)
         ).fetchone()
 
     # Comparación en tiempo constante: aunque el usuario no exista, gastamos
@@ -1056,8 +1153,8 @@ def login(request: Request, payload: LoginIn, response: Response):
     hash_a_comparar = row["password_hash"] if row else bcrypt.hashpw(b"dummy", bcrypt.gensalt()).decode()
     password_ok = bcrypt.checkpw(payload.password.encode(), hash_a_comparar.encode())
 
-    if not row or not password_ok:
-        raise HTTPException(status_code=401, detail="Usuario o contraseña incorrectos")
+    if not row or not password_ok: raise HTTPException(status_code=401, detail="Usuario o contraseña incorrectos")
+    if row["email"] and not row["email_verificado"]: raise HTTPException(status_code=403, detail="Tu correo todavía no está verificado. Revisa tu bandeja de entrada o solicita un nuevo correo.")
 
     token = secrets.token_urlsafe(32)
     with db() as conn:
@@ -1075,6 +1172,62 @@ def login(request: Request, payload: LoginIn, response: Response):
     )
     return {"ok": True, "usuario": payload.usuario}
 
+
+@app.post("/api/solicitar-reset-password")
+@limiter.limit("3/hour")
+def solicitar_reset_password(request: Request, payload: EmailCuentaIn):
+    with db() as conn: row=conn.execute("SELECT usuario,email FROM usuarios WHERE lower(email)=?",(payload.email,)).fetchone()
+    if row:
+        try: enviar_reset_password(request,row["usuario"],row["email"])
+        except Exception: pass
+    return {"ok":True,"mensaje":"Si existe una cuenta con ese correo, recibirás instrucciones para restablecer la contraseña."}
+
+@app.post("/api/restablecer-contrasena")
+@limiter.limit("10/hour")
+def restablecer_contrasena(payload: ResetPasswordIn):
+    validar_password_nueva(payload.password_nueva); usuario=consumir_token_cuenta(payload.token,"reset_password")
+    if not usuario: raise HTTPException(status_code=400,detail="El enlace no es válido o ha caducado.")
+    nuevo=bcrypt.hashpw(payload.password_nueva.encode(),bcrypt.gensalt()).decode()
+    with db() as conn: conn.execute("UPDATE usuarios SET password_hash=? WHERE usuario=?",(nuevo,usuario)); conn.execute("DELETE FROM sesiones_login WHERE usuario=?",(usuario,))
+    return {"ok":True}
+
+@app.get("/api/cuenta")
+def cuenta_actual(usuario: str = Depends(obtener_usuario_actual)):
+    with db() as conn: row=conn.execute("SELECT usuario,email,email_verificado FROM usuarios WHERE usuario=?",(usuario,)).fetchone()
+    return dict(row)
+
+@app.post("/api/cuenta/cambiar-password")
+@limiter.limit("10/hour")
+def cambiar_password(payload: CambiarPasswordIn, usuario: str = Depends(obtener_usuario_actual)):
+    validar_password_nueva(payload.password_nueva)
+    with db() as conn: row=conn.execute("SELECT password_hash FROM usuarios WHERE usuario=?",(usuario,)).fetchone()
+    if not row or not bcrypt.checkpw(payload.password_actual.encode(),row["password_hash"].encode()): raise HTTPException(status_code=403,detail="Contraseña actual incorrecta")
+    nuevo=bcrypt.hashpw(payload.password_nueva.encode(),bcrypt.gensalt()).decode()
+    with db() as conn: conn.execute("UPDATE usuarios SET password_hash=? WHERE usuario=?",(nuevo,usuario))
+    return {"ok":True}
+
+@app.post("/api/cuenta/cambiar-email")
+@limiter.limit("5/hour")
+def cambiar_email(request: Request, payload: EmailCuentaIn, usuario: str = Depends(obtener_usuario_actual)):
+    with db() as conn:
+        row=conn.execute("SELECT password_hash,email FROM usuarios WHERE usuario=?",(usuario,)).fetchone()
+        if conn.execute("SELECT 1 FROM usuarios WHERE lower(email)=? AND usuario<>?",(payload.email,usuario)).fetchone(): raise HTTPException(status_code=400,detail="Ese correo ya está asociado a otra cuenta")
+    if not row or not bcrypt.checkpw(payload.password.encode(),row["password_hash"].encode()): raise HTTPException(status_code=403,detail="Contraseña incorrecta")
+    with db() as conn: conn.execute("UPDATE usuarios SET email=?,email_verificado=0 WHERE usuario=?",(payload.email,usuario))
+    try: enviar_verificacion_email(request,usuario,payload.email)
+    except Exception:
+        with db() as conn: conn.execute("UPDATE usuarios SET email=?,email_verificado=1 WHERE usuario=?",(row["email"],usuario))
+        raise HTTPException(status_code=503,detail="No se ha podido enviar el correo. No se ha cambiado tu dirección.")
+    return {"ok":True}
+
+@app.post("/api/cuenta/eliminar")
+@limiter.limit("3/hour")
+def eliminar_cuenta(password: str = Form(...), usuario: str = Depends(obtener_usuario_actual)):
+    with db() as conn: row=conn.execute("SELECT password_hash FROM usuarios WHERE usuario=?",(usuario,)).fetchone()
+    if not row or not bcrypt.checkpw(password.encode(),row["password_hash"].encode()): raise HTTPException(status_code=403,detail="Contraseña incorrecta")
+    borrar_datos_usuario(usuario)
+    with db() as conn: conn.execute("DELETE FROM tokens_cuenta WHERE usuario=?",(usuario,)); conn.execute("DELETE FROM sesiones_login WHERE usuario=?",(usuario,)); conn.execute("DELETE FROM usuarios WHERE usuario=?",(usuario,))
+    return {"ok":True}
 
 @app.post("/api/logout")
 def logout(request: Request, response: Response):
@@ -2153,6 +2306,32 @@ def mejorar_capitulo_autobiografia(capitulo_id: int, payload: AccionCapituloIn, 
     registrar_uso_diario(usuario,respuesta.usage.input_tokens,respuesta.usage.output_tokens)
     return {"contenido":contenido,"fecha_generado":fecha,"modelo":modelo}
 
+
+@app.post("/api/autobiografia/generar-completa")
+def generar_autobiografia_completa(usuario: str = Depends(obtener_usuario_actual)):
+    comprobar_limite_diario(usuario)
+    with db() as conn:
+        proyecto=conn.execute("SELECT tono FROM autobiografia_proyectos WHERE usuario=?",(usuario,)).fetchone()
+        capitulos=conn.execute("SELECT orden,titulo,contenido FROM autobiografia_capitulos WHERE usuario=? ORDER BY orden,id",(usuario,)).fetchall()
+    if not capitulos: raise HTTPException(status_code=400,detail="Primero crea una estructura por capítulos.")
+    if any(not (c["contenido"] or "").strip() for c in capitulos): raise HTTPException(status_code=400,detail="Genera primero todos los capítulos antes de unificar la autobiografía.")
+    tono=TONOS_AUTOBIOGRAFIA.get((proyecto["tono"] if proyecto else "natural"),TONOS_AUTOBIOGRAFIA["natural"])
+    material="\n\n".join(f"CAPÍTULO {i+1}: {c['titulo']}\n{c['contenido']}" for i,c in enumerate(capitulos))
+    system="""Eres la editora final de una autobiografía. Recibes capítulos ya escritos y revisados por la propia persona. Convierte esos capítulos en un único libro continuo en primera persona.
+
+Reglas:
+- Conserva los hechos, fechas, nombres y acontecimientos de los capítulos. No inventes nada.
+- Elimina repeticiones y crea transiciones naturales.
+- Mantén el tono indicado y la voz personal.
+- No resumas: integra los capítulos en una narración continua.
+- Conserva los capítulos mediante encabezados Markdown ##.
+- No añadas comentarios sobre el proceso ni una introducción dirigida al usuario.
+"""
+    respuesta=llamar_a_claude(model=obtener_modelo_usuario(usuario,"autobiografia"),max_tokens=10000,system=system,messages=[{"role":"user","content":f"Tono: {tono}\n\n{material}"}],timeout=180.0)
+    contenido=next((b.text for b in respuesta.content if getattr(b,"type",None)=="text"),"").strip(); fecha=datetime.utcnow().isoformat(); modelo=obtener_modelo_usuario(usuario,"autobiografia")
+    with db() as conn: conn.execute("INSERT INTO autobiografia (usuario,contenido,fecha_generada,tokens_input,tokens_output,modelo) VALUES (?,?,?,?,?,?) ON CONFLICT(usuario) DO UPDATE SET contenido=excluded.contenido,fecha_generada=excluded.fecha_generada,tokens_input=autobiografia.tokens_input+excluded.tokens_input,tokens_output=autobiografia.tokens_output+excluded.tokens_output,modelo=excluded.modelo",(usuario,contenido,fecha,respuesta.usage.input_tokens,respuesta.usage.output_tokens,modelo))
+    registrar_uso_diario(usuario,respuesta.usage.input_tokens,respuesta.usage.output_tokens)
+    return {"contenido":contenido,"fecha_generada":fecha,"modelo":modelo}
 
 @app.post("/api/generar-autobiografia")
 def generar_autobiografia(usuario: str = Depends(obtener_usuario_actual)):
