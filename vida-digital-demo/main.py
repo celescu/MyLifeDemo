@@ -1089,6 +1089,7 @@ def enviar_email(destinatario: str, asunto: str, html: str):
         headers={
             "Authorization": f"Bearer {RESEND_API_KEY}",
             "Content-Type": "application/json",
+            "User-Agent": "memoricorde/1.0",
         },
     )
 
@@ -1132,7 +1133,7 @@ def enviar_verificacion_email(request: Request, usuario: str, email: str):
     enviar_email(email,"Verifica tu cuenta de Memoricorde",f'<p>Hola,</p><p>Confirma tu dirección de correo para activar tu cuenta:</p><p><a href="{enlace}">Verificar mi correo</a></p><p>El enlace caduca en 24 horas y solo puede utilizarse una vez.</p>')
 
 def enviar_reset_password(request: Request, usuario: str, email: str):
-    token=crear_token_cuenta(usuario,"reset_password",60); enlace=f"{_base_publica(request)}/restablecer.html?token={token}"
+    token=crear_token_cuenta(usuario,"reset_password",60); enlace=f"{_base_publica(request)}/reset.html?token={token}"
     enviar_email(email,"Restablecer tu contraseña de Memoricorde",f'<p>Hola,</p><p>Puedes establecer una nueva contraseña aquí:</p><p><a href="{enlace}">Restablecer contraseña</a></p><p>El enlace caduca en 1 hora y solo puede utilizarse una vez.</p>')
 
 # ---------------------------------------------------------------------------
