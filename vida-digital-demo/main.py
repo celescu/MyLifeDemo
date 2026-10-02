@@ -23,7 +23,6 @@ import traceback
 import hashlib
 import re
 from urllib.request import Request as UrlRequest, urlopen
-from urllib.error import HTTPError, URLError
 from difflib import SequenceMatcher
 import bcrypt
 from datetime import datetime
@@ -164,7 +163,10 @@ def _guardar_estado_reconstruccion(job_id, **cambios):
 
 def _estado_publico_reconstruccion(row):
     errores=json.loads(row.get("errores") or "[]") if isinstance(row.get("errores"),str) else (row.get("errores") or [])
-    return {"job_id":row["id"],"estado":row["estado"],"total":row["total"],"procesadas":row["procesadas"],"omitidas":row["omitidas"],"errores":errores,"sesion_actual":row.get("sesion_actual"),"mensaje":row.get("mensaje") or "","inicio":row.get("inicio"),"fin":row.get("fin")}
+    coste = coste_uso_ia(row["usuario"], "reconstruccion", row["id"])
+    with db() as conn:
+        uso = conn.execute("SELECT COALESCE(SUM(tokens_input),0) AS ti, COALESCE(SUM(tokens_output),0) AS to_ FROM uso_ia WHERE usuario=? AND operacion='reconstruccion' AND referencia=?", (row["usuario"], str(row["id"]))).fetchone()
+    return {"job_id":row["id"],"estado":row["estado"],"total":row["total"],"procesadas":row["procesadas"],"omitidas":row["omitidas"],"errores":errores,"sesion_actual":row.get("sesion_actual"),"mensaje":row.get("mensaje") or "","inicio":row.get("inicio"),"fin":row.get("fin"),"tokens_input":int(uso["ti"] or 0),"tokens_output":int(uso["to_"] or 0),"coste_estimado":round(coste,6)}
 
 def _crear_reconstruccion(usuario,total,procesadas_ids=None,procesadas=0,omitidas=0,errores=None):
     job_id=secrets.token_urlsafe(18); ahora=datetime.utcnow().isoformat(); procesadas_ids=procesadas_ids or []; errores=errores or []
@@ -196,9 +198,9 @@ def _ejecutar_reconstruccion(job_id,usuario,filas):
                 if not turnos:
                     omitidas+=1; hechas.add(sid); _guardar_estado_reconstruccion(job_id,omitidas=omitidas,procesadas_ids=json.dumps(sorted(hechas)),mensaje=f"La sesión {sid} no tiene respuesta de la IA; se omite."); continue
                 transcripcion="\n".join(f"{m['role']}: {m['content']}" for m in mensajes if m["role"] in ("user","assistant"))
-                nuevo,titulo,respuesta=construir_resumen_desde_transcripcion(usuario,resumen_actual,transcripcion)
+                nuevo,titulo,respuesta=construir_resumen_desde_transcripcion(usuario,resumen_actual,transcripcion,operacion="reconstruccion",referencia=job_id)
                 if nuevo is None: raise RuntimeError("El modelo no devolvió la herramienta de memoria.")
-                resumen_actual=nuevo; sumar_tokens(sid,respuesta.usage.input_tokens,respuesta.usage.output_tokens); registrar_uso_diario(usuario,respuesta.usage.input_tokens,respuesta.usage.output_tokens); marcar_cerrada(sid)
+                resumen_actual=nuevo; registrar_uso_diario(usuario,respuesta.usage.input_tokens,respuesta.usage.output_tokens); marcar_cerrada(sid)
                 if titulo: aplicar_titulo_generado(sid,titulo)
                 guardar_resumen(usuario,resumen_actual); procesadas+=1; hechas.add(sid); errores=[e for e in errores if e.get("sesion_id")!=sid]
                 _guardar_estado_reconstruccion(job_id,procesadas=procesadas,errores=json.dumps(errores,ensure_ascii=False),procesadas_ids=json.dumps(sorted(hechas)),mensaje=f"Sesión {sid} reconstruida correctamente.")
@@ -417,6 +419,21 @@ def init_db_sobre(conn):
             PRIMARY KEY (usuario, fecha)
         )
     """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS uso_ia (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            usuario TEXT NOT NULL,
+            fecha TEXT NOT NULL,
+            operacion TEXT NOT NULL,
+            modelo TEXT NOT NULL,
+            tokens_input INTEGER NOT NULL DEFAULT 0,
+            tokens_output INTEGER NOT NULL DEFAULT 0,
+            coste_usd REAL NOT NULL DEFAULT 0,
+            referencia TEXT
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_uso_ia_usuario_fecha ON uso_ia(usuario, fecha)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_uso_ia_referencia ON uso_ia(usuario, referencia)")
     columnas_existentes = {fila[1] for fila in conn.execute("PRAGMA table_info(sesiones)").fetchall()}
     for columna, definicion in [
         ("fecha_cierre", "TEXT"),
@@ -697,6 +714,39 @@ def coste_tokens_modelo(modelo: str, tokens_input: int, tokens_output: int) -> f
     pin, pout = PRECIOS_MODELO.get(modelo, (PRECIO_INPUT_POR_MILLON, PRECIO_OUTPUT_POR_MILLON))
     return (tokens_input or 0) / 1_000_000 * pin + (tokens_output or 0) / 1_000_000 * pout
 
+
+def registrar_consumo_ia(usuario: str, operacion: str, modelo: str, respuesta, referencia: str | int | None = None) -> float:
+    """Registra una llamada real a Anthropic y devuelve su coste estimado en USD.
+
+    El precio se calcula con el modelo realmente utilizado, no con el modelo
+    predeterminado de la aplicación. Esto permite analizar por separado
+    entrevistas, autobiografías, capítulos y reconstrucciones.
+    """
+    tokens_input = int(getattr(respuesta.usage, "input_tokens", 0) or 0)
+    tokens_output = int(getattr(respuesta.usage, "output_tokens", 0) or 0)
+    coste = coste_tokens_modelo(modelo, tokens_input, tokens_output)
+    with db() as conn:
+        conn.execute(
+            "INSERT INTO uso_ia (usuario,fecha,operacion,modelo,tokens_input,tokens_output,coste_usd,referencia) VALUES (?,?,?,?,?,?,?,?)",
+            (usuario, datetime.utcnow().isoformat(), operacion, modelo, tokens_input, tokens_output, coste, str(referencia) if referencia is not None else None),
+        )
+    return coste
+
+
+def coste_uso_ia(usuario: str, operacion: str | None = None, referencia: str | int | None = None) -> float:
+    condiciones = ["usuario = ?"]
+    params = [usuario]
+    if operacion is not None:
+        condiciones.append("operacion = ?"); params.append(operacion)
+    if referencia is not None:
+        condiciones.append("referencia = ?"); params.append(str(referencia))
+    with db() as conn:
+        row = conn.execute(
+            "SELECT COALESCE(SUM(coste_usd),0) AS coste FROM uso_ia WHERE " + " AND ".join(condiciones),
+            params,
+        ).fetchone()
+    return float(row["coste"] or 0)
+
 def _normalizar_resumen(resumen: dict) -> dict:
     resumen = resumen or {}
     resumen.setdefault("bloques", {})
@@ -941,7 +991,18 @@ def comprobar_limite_diario(usuario: str):
             status_code=429,
             detail=f"Has llegado al límite de {LIMITE_MENSAJES_DIARIOS} mensajes de hoy. Puedes continuar mañana.",
         )
-    if calcular_coste(row["tokens_input"], row["tokens_output"]) >= LIMITE_COSTE_DIARIO_USD:
+    with db() as conn:
+        fila_coste = conn.execute(
+            "SELECT COALESCE(SUM(coste_usd),0) AS coste, COUNT(*) AS n FROM uso_ia WHERE usuario=? AND substr(fecha,1,10)=?",
+            (usuario, fecha),
+        ).fetchone()
+    if fila_coste["n"]:
+        coste_dia = float(fila_coste["coste"] or 0)
+    else:
+        # Compatibilidad con días anteriores a la introducción del registro
+        # detallado de uso: se mantiene el cálculo antiguo como respaldo.
+        coste_dia = calcular_coste(row["tokens_input"], row["tokens_output"])
+    if coste_dia >= LIMITE_COSTE_DIARIO_USD:
         raise HTTPException(
             status_code=429,
             detail="Has llegado al límite de uso diario. Puedes continuar mañana.",
@@ -1066,51 +1127,11 @@ def _base_publica(request: Request) -> str:
     return PUBLIC_BASE_URL or str(request.base_url).rstrip("/")
 
 def enviar_email(destinatario: str, asunto: str, html: str):
-    """Envía correo mediante Resend y deja el motivo real del fallo en Railway.
-
-    Nunca se registra la API key. En caso de error HTTP se registra el código
-    y el cuerpo devuelto por Resend, que normalmente contiene el diagnóstico
-    útil (dominio no verificado, remitente no permitido, API key inválida, etc.).
-    """
-    if not RESEND_API_KEY:
-        print("[EMAIL] ERROR: RESEND_API_KEY no está configurada")
-        raise RuntimeError("RESEND_API_KEY no está configurada")
-
-    payload=json.dumps({
-        "from": EMAIL_FROM,
-        "to": [destinatario],
-        "subject": asunto,
-        "html": html,
-    }).encode("utf-8")
-    req=UrlRequest(
-        "https://api.resend.com/emails",
-        data=payload,
-        method="POST",
-        headers={
-            "Authorization": f"Bearer {RESEND_API_KEY}",
-            "Content-Type": "application/json",
-            "User-Agent": "memoricorde/1.0",
-        },
-    )
-
-    try:
-        with urlopen(req, timeout=20) as resp:
-            body=resp.read().decode("utf-8", errors="replace")
-            if 200 <= resp.status < 300:
-                print(f"[EMAIL] Resend aceptó el envío para {destinatario} (HTTP {resp.status})")
-                return
-            print(f"[EMAIL] Resend respondió HTTP {resp.status}: {body}")
-            raise RuntimeError(f"Resend HTTP {resp.status}: {body}")
-    except HTTPError as exc:
-        body=exc.read().decode("utf-8", errors="replace")
-        print(f"[EMAIL] Resend respondió HTTP {exc.code}: {body}")
-        raise RuntimeError(f"Resend HTTP {exc.code}: {body}") from exc
-    except URLError as exc:
-        print(f"[EMAIL] Error de conexión con Resend: {exc}")
-        raise RuntimeError(f"No se pudo conectar con Resend: {exc}") from exc
-    except TimeoutError as exc:
-        print(f"[EMAIL] Timeout conectando con Resend: {exc}")
-        raise RuntimeError("Tiempo de espera agotado al conectar con Resend") from exc
+    if not RESEND_API_KEY: raise RuntimeError("RESEND_API_KEY no está configurada")
+    payload=json.dumps({"from":EMAIL_FROM,"to":[destinatario],"subject":asunto,"html":html}).encode()
+    req=UrlRequest("https://api.resend.com/emails",data=payload,method="POST",headers={"Authorization":f"Bearer {RESEND_API_KEY}","Content-Type":"application/json"})
+    with urlopen(req,timeout=20) as resp:
+        if resp.status < 200 or resp.status >= 300: raise RuntimeError(f"Resend HTTP {resp.status}")
 
 def crear_token_cuenta(usuario: str, tipo: str, minutos: int) -> str:
     token=secrets.token_urlsafe(32); ahora=datetime.utcnow(); expira=datetime.fromtimestamp(ahora.timestamp()+minutos*60).isoformat()
@@ -1133,7 +1154,7 @@ def enviar_verificacion_email(request: Request, usuario: str, email: str):
     enviar_email(email,"Verifica tu cuenta de Memoricorde",f'<p>Hola,</p><p>Confirma tu dirección de correo para activar tu cuenta:</p><p><a href="{enlace}">Verificar mi correo</a></p><p>El enlace caduca en 24 horas y solo puede utilizarse una vez.</p>')
 
 def enviar_reset_password(request: Request, usuario: str, email: str):
-    token=crear_token_cuenta(usuario,"reset_password",60); enlace=f"{_base_publica(request)}/reset.html?token={token}"
+    token=crear_token_cuenta(usuario,"reset_password",60); enlace=f"{_base_publica(request)}/restablecer.html?token={token}"
     enviar_email(email,"Restablecer tu contraseña de Memoricorde",f'<p>Hola,</p><p>Puedes establecer una nueva contraseña aquí:</p><p><a href="{enlace}">Restablecer contraseña</a></p><p>El enlace caduca en 1 hora y solo puede utilizarse una vez.</p>')
 
 # ---------------------------------------------------------------------------
@@ -1153,14 +1174,9 @@ def registro(request: Request, payload: RegistroIn):
         if conn.execute("SELECT 1 FROM usuarios WHERE usuario=?",(payload.usuario,)).fetchone(): raise HTTPException(status_code=400,detail="Ese nombre de usuario ya existe")
         if conn.execute("SELECT 1 FROM usuarios WHERE lower(email)=?",(payload.email,)).fetchone(): raise HTTPException(status_code=400,detail="Ese correo ya está asociado a una cuenta")
         conn.execute("INSERT INTO usuarios(usuario,password_hash,creada,modelo_entrevista,modelo_autobiografia,email,email_verificado) VALUES(?,?,?,?,?,?,0)",(payload.usuario,password_hash,datetime.utcnow().isoformat(),payload.modelo_entrevista,payload.modelo_autobiografia,payload.email))
-    try:
-        enviar_verificacion_email(request,payload.usuario,payload.email)
-    except Exception as exc:
-        print(f"[ERROR] registro: no se pudo enviar el correo de verificación a {payload.email}: {exc}")
-        traceback.print_exc()
-        with db() as conn:
-            conn.execute("DELETE FROM tokens_cuenta WHERE usuario=?",(payload.usuario,))
-            conn.execute("DELETE FROM usuarios WHERE usuario=?",(payload.usuario,))
+    try: enviar_verificacion_email(request,payload.usuario,payload.email)
+    except Exception:
+        with db() as conn: conn.execute("DELETE FROM usuarios WHERE usuario=?",(payload.usuario,))
         raise HTTPException(status_code=503,detail="No se ha podido enviar el correo de verificación. La cuenta no se ha creado; inténtalo de nuevo más tarde.")
     return {"ok":True,"requiere_verificacion":True}
 
@@ -1389,6 +1405,7 @@ def enviar_mensaje(request: Request, payload: MensajeIn, usuario: str = Depends(
     guardar_mensajes(sesion_id, mensajes)
     sumar_tokens(sesion_id, respuesta.usage.input_tokens, respuesta.usage.output_tokens)
     registrar_uso_diario(usuario, respuesta.usage.input_tokens, respuesta.usage.output_tokens)
+    registrar_consumo_ia(usuario, "entrevista", obtener_modelo_usuario(usuario, "entrevista"), respuesta, sesion_id)
 
     if texto.startswith(MARCADOR_CIERRE_USO_INDEBIDO):
         texto_visible = texto[len(MARCADOR_CIERRE_USO_INDEBIDO):].strip()
@@ -1412,7 +1429,7 @@ def enviar_mensaje(request: Request, payload: MensajeIn, usuario: str = Depends(
     }
 
 
-def construir_resumen_desde_transcripcion(usuario: str, resumen_previo: dict, transcripcion: str, timeout: float = 100.0):
+def construir_resumen_desde_transcripcion(usuario: str, resumen_previo: dict, transcripcion: str, timeout: float = 100.0, operacion: str = "cierre_sesion", referencia: str | int | None = None):
     """Llama al modelo con la misma herramienta que usa el cierre de sesión
     normal, para fusionar una transcripción con el resumen de memoria previo.
     Se usa tanto al cerrar una sesión como al reconstruir la memoria completa
@@ -1435,6 +1452,7 @@ def construir_resumen_desde_transcripcion(usuario: str, resumen_previo: dict, tr
         }],
         timeout=timeout,
     )
+    registrar_consumo_ia(usuario, operacion, obtener_modelo_usuario(usuario, "entrevista"), respuesta, referencia)
     bloque_herramienta = next((b for b in respuesta.content if b.type == "tool_use"), None)
     if bloque_herramienta is None:
         print(f"[AVISO] El modelo no devolvió una llamada a la herramienta para {usuario}")
@@ -1476,7 +1494,7 @@ def cerrar_sesion(payload: CerrarSesionIn, usuario: str = Depends(obtener_usuari
     _inicio = time.perf_counter()
     try:
         nuevo_resumen, titulo_sesion, respuesta = construir_resumen_desde_transcripcion(
-            usuario, resumen_previo, transcripcion
+            usuario, resumen_previo, transcripcion, operacion="cierre_sesion", referencia=payload.sesion_id
         )
     except anthropic.APITimeoutError:
         print(f"[tiempos] cerrar_sesion ({usuario}, sesión {payload.sesion_id}): TIMEOUT tras {time.perf_counter() - _inicio:.1f}s")
@@ -1624,6 +1642,7 @@ def enviar_mensaje_aportacion(request: Request, payload: MensajeIn, usuario: str
     guardar_mensajes(sesion_id, mensajes)
     sumar_tokens(sesion_id, respuesta.usage.input_tokens, respuesta.usage.output_tokens)
     registrar_uso_diario(usuario, respuesta.usage.input_tokens, respuesta.usage.output_tokens)
+    registrar_consumo_ia(usuario, "aportacion_externa", obtener_modelo_usuario(usuario, "entrevista"), respuesta, sesion_id)
 
     return {"sesion_id": sesion_id, "respuesta": texto, "fecha_inicio": fecha_inicio}
 
@@ -1894,27 +1913,59 @@ def obtener_metricas(usuario: str = Depends(obtener_usuario_actual)):
         total_palabras += palabras
         total_segundos += duracion_segundos
 
-    total_coste = sum(x["coste_estimado"] for x in sesiones)
+    total_coste_sesiones = sum(x["coste_estimado"] for x in sesiones)
 
     with db() as conn:
         fila_autobio = conn.execute(
             "SELECT tokens_input, tokens_output, modelo FROM autobiografia WHERE usuario = ?", (usuario,)
         ).fetchone()
+        filas_operaciones = conn.execute(
+            "SELECT operacion, COUNT(*) AS veces, COALESCE(SUM(tokens_input),0) AS tokens_input, COALESCE(SUM(tokens_output),0) AS tokens_output, COALESCE(SUM(coste_usd),0) AS coste FROM uso_ia WHERE usuario=? GROUP BY operacion ORDER BY coste DESC",
+            (usuario,),
+        ).fetchall()
+        filas_recon = conn.execute(
+            "SELECT id, estado, inicio, fin FROM reconstrucciones WHERE usuario=? ORDER BY inicio DESC",
+            (usuario,),
+        ).fetchall()
     tokens_input_autobio = fila_autobio["tokens_input"] if fila_autobio else 0
     tokens_output_autobio = fila_autobio["tokens_output"] if fila_autobio else 0
     modelo_autobio=fila_autobio["modelo"] if fila_autobio and fila_autobio["modelo"] else obtener_modelo_usuario(usuario,"autobiografia")
     coste_autobio=coste_tokens_modelo(modelo_autobio,tokens_input_autobio,tokens_output_autobio)
 
+    # Las sesiones y la autobiografía ya tienen sus tokens históricos guardados
+    # en sus tablas. El registro uso_ia añade operaciones que antes no tenían
+    # desglose propio (reconstrucciones, capítulos, mejoras e índices).
+    operaciones = []
+    for r in filas_operaciones:
+        operaciones.append({"operacion":r["operacion"],"veces":r["veces"],"tokens_input":int(r["tokens_input"] or 0),"tokens_output":int(r["tokens_output"] or 0),"coste_estimado":round(float(r["coste"] or 0),6)})
+    coste_reconstrucciones = sum(o["coste_estimado"] for o in operaciones if o["operacion"] == "reconstruccion")
+    coste_aportaciones = sum(o["coste_estimado"] for o in operaciones if o["operacion"] == "aportacion_externa")
+    coste_operaciones_extra = sum(o["coste_estimado"] for o in operaciones if o["operacion"] in {"autobiografia_indice","autobiografia_capitulo","autobiografia_mejora"})
+
+    reconstrucciones = []
+    for r in filas_recon:
+        coste = coste_uso_ia(usuario, "reconstruccion", r["id"])
+        with db() as conn:
+            u = conn.execute("SELECT COALESCE(SUM(tokens_input),0) ti, COALESCE(SUM(tokens_output),0) to_ FROM uso_ia WHERE usuario=? AND operacion='reconstruccion' AND referencia=?", (usuario, str(r["id"]))).fetchone()
+        reconstrucciones.append({"id":r["id"],"estado":r["estado"],"inicio":r["inicio"],"fin":r["fin"],"tokens_input":int(u["ti"] or 0),"tokens_output":int(u["to_"] or 0),"coste_estimado":round(coste,6)})
+
+    coste_total = total_coste_sesiones + coste_autobio + coste_reconstrucciones + coste_aportaciones + coste_operaciones_extra
     return {
         "sesiones": sesiones,
+        "reconstrucciones": reconstrucciones,
+        "operaciones": operaciones,
         "totales": {
             "num_sesiones": len(sesiones),
             "tokens_input": total_tokens_input + tokens_input_autobio,
             "tokens_output": total_tokens_output + tokens_output_autobio,
             "palabras_usuario": total_palabras,
             "duracion_segundos": total_segundos,
-            "coste_estimado": round(total_coste + coste_autobio, 4),
+            "coste_estimado": round(coste_total, 4),
+            "coste_sesiones": round(total_coste_sesiones, 4),
             "coste_autobiografia": round(coste_autobio, 4),
+            "coste_reconstrucciones": round(coste_reconstrucciones, 4),
+            "coste_aportaciones_externas": round(coste_aportaciones, 4),
+            "coste_operaciones_autobiografia": round(coste_operaciones_extra, 4),
         },
     }
 
@@ -2256,11 +2307,13 @@ def previsualizar_autobiografia(payload: AutobiografiaPreviewIn, usuario: str = 
         messages=[{"role": "user", "content": f"Tono elegido: {TONOS_AUTOBIOGRAFIA[payload.tono]}\n\n{_datos_autobiografia(resumen)}"}],
         timeout=60.0,
     )
+    modelo = obtener_modelo_usuario(usuario, "autobiografia")
+    coste = registrar_consumo_ia(usuario, "autobiografia_indice", modelo, respuesta)
     bloque = next((b for b in respuesta.content if b.type == "tool_use"), None)
     if bloque is None:
         raise HTTPException(status_code=502, detail="No se pudo crear la estructura de la autobiografía")
     return {"tono": payload.tono, "titulo": bloque.input.get("titulo", "Mi autobiografía"), "capitulos": bloque.input.get("capitulos", []),
-            "modelo": obtener_modelo_usuario(usuario, "autobiografia"), "tokens_input": respuesta.usage.input_tokens, "tokens_output": respuesta.usage.output_tokens}
+            "modelo": modelo, "tokens_input": respuesta.usage.input_tokens, "tokens_output": respuesta.usage.output_tokens, "coste_estimado": round(coste, 6)}
 
 
 @app.post("/api/autobiografia/proyecto")
@@ -2318,7 +2371,8 @@ def generar_capitulo_autobiografia(capitulo_id: int, usuario: str = Depends(obte
         conn.execute("UPDATE autobiografia_capitulos SET contenido=?, estado='generado', modelo=?, tokens_input=tokens_input+?, tokens_output=tokens_output+?, fecha_generado=?, editado_manual=0 WHERE id=? AND usuario=?",
                      (contenido, modelo, respuesta.usage.input_tokens, respuesta.usage.output_tokens, fecha, capitulo_id, usuario))
     registrar_uso_diario(usuario, respuesta.usage.input_tokens, respuesta.usage.output_tokens)
-    return {"ok": True, "capitulo_id": capitulo_id, "contenido": contenido, "fecha_generado": fecha, "modelo": modelo}
+    coste = registrar_consumo_ia(usuario, "autobiografia_capitulo", modelo, respuesta, capitulo_id)
+    return {"ok": True, "capitulo_id": capitulo_id, "contenido": contenido, "fecha_generado": fecha, "modelo": modelo, "coste_estimado": round(coste, 6)}
 
 
 @app.put("/api/autobiografia/capitulos/{capitulo_id}")
@@ -2350,7 +2404,8 @@ def mejorar_capitulo_autobiografia(capitulo_id: int, payload: AccionCapituloIn, 
     with db() as conn:
         conn.execute("UPDATE autobiografia_capitulos SET contenido=?, estado='editado', modelo=?, tokens_input=tokens_input+?, tokens_output=tokens_output+?, fecha_generado=?, editado_manual=1 WHERE id=? AND usuario=?", (contenido,modelo,respuesta.usage.input_tokens,respuesta.usage.output_tokens,fecha,capitulo_id,usuario))
     registrar_uso_diario(usuario,respuesta.usage.input_tokens,respuesta.usage.output_tokens)
-    return {"contenido":contenido,"fecha_generado":fecha,"modelo":modelo}
+    coste = registrar_consumo_ia(usuario, "autobiografia_mejora", modelo, respuesta, capitulo_id)
+    return {"contenido":contenido,"fecha_generado":fecha,"modelo":modelo,"coste_estimado":round(coste, 6)}
 
 
 @app.post("/api/autobiografia/generar-completa")
@@ -2377,7 +2432,8 @@ Reglas:
     contenido=next((b.text for b in respuesta.content if getattr(b,"type",None)=="text"),"").strip(); fecha=datetime.utcnow().isoformat(); modelo=obtener_modelo_usuario(usuario,"autobiografia")
     with db() as conn: conn.execute("INSERT INTO autobiografia (usuario,contenido,fecha_generada,tokens_input,tokens_output,modelo) VALUES (?,?,?,?,?,?) ON CONFLICT(usuario) DO UPDATE SET contenido=excluded.contenido,fecha_generada=excluded.fecha_generada,tokens_input=autobiografia.tokens_input+excluded.tokens_input,tokens_output=autobiografia.tokens_output+excluded.tokens_output,modelo=excluded.modelo",(usuario,contenido,fecha,respuesta.usage.input_tokens,respuesta.usage.output_tokens,modelo))
     registrar_uso_diario(usuario,respuesta.usage.input_tokens,respuesta.usage.output_tokens)
-    return {"contenido":contenido,"fecha_generada":fecha,"modelo":modelo}
+    coste = registrar_consumo_ia(usuario, "autobiografia_completa", modelo, respuesta)
+    return {"contenido":contenido,"fecha_generada":fecha,"modelo":modelo,"coste_estimado":round(coste, 6)}
 
 @app.post("/api/generar-autobiografia")
 def generar_autobiografia(usuario: str = Depends(obtener_usuario_actual)):
@@ -2391,7 +2447,8 @@ def generar_autobiografia(usuario: str = Depends(obtener_usuario_actual)):
     with db() as conn:
         conn.execute("INSERT INTO autobiografia (usuario,contenido,fecha_generada,tokens_input,tokens_output,modelo) VALUES (?,?,?,?,?,?) ON CONFLICT(usuario) DO UPDATE SET contenido=excluded.contenido,fecha_generada=excluded.fecha_generada,tokens_input=autobiografia.tokens_input+excluded.tokens_input,tokens_output=autobiografia.tokens_output+excluded.tokens_output,modelo=excluded.modelo", (usuario,contenido,fecha,respuesta.usage.input_tokens,respuesta.usage.output_tokens,modelo))
     registrar_uso_diario(usuario,respuesta.usage.input_tokens,respuesta.usage.output_tokens)
-    return {"contenido":contenido,"fecha_generada":fecha,"modelo":modelo}
+    coste = registrar_consumo_ia(usuario, "autobiografia_completa", modelo, respuesta)
+    return {"contenido":contenido,"fecha_generada":fecha,"modelo":modelo,"coste_estimado":round(coste, 6)}
 
 
 # ---------------------------------------------------------------------------
