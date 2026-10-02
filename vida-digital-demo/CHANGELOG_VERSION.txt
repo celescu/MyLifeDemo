@@ -1,0 +1,36 @@
+MEMORICORDE — ÚLTIMA VERSIÓN CORRECTA
+Fecha: 2026-10-02
+
+BASE
+- Base funcional: Fase A de 2026-09-30, que conserva el editor visual de Recuerdos,
+  el menú Avanzado y la vista Métricas.
+- Se incorpora únicamente el registro detallado de consumo de IA de la versión
+  de costes, corrigiendo antes la regresión que había sustituido cambiar-email.
+
+CONSERVADO
+- Editor visual de Recuerdos y marcado de campos editados manualmente.
+- Menú AVANZADO.
+- Métricas de uso.
+- Reconstrucción de recuerdos con progreso, cancelación y reanudación.
+- Autobiografía por capítulos y autobiografía completa.
+- Aportaciones familiares.
+- Registro, verificación de correo y recuperación de contraseña.
+- Cuenta, cambio de contraseña, cambio de correo y eliminación de cuenta.
+- Aislamiento de datos entre usuarios.
+- Configuración de modelos estándar/avanzado.
+- Resend con User-Agent memoricorde/1.0.
+
+AÑADIDO
+- Tabla uso_ia para registrar llamadas reales a Anthropic.
+- Coste estimado por modelo y operación.
+- Desglose de costes de entrevistas, aportaciones, autobiografía y reconstrucciones.
+
+CORRECCIÓN
+- Restaurado el endpoint /api/cuenta/cambiar-email que había quedado
+  accidentalmente reemplazado por una segunda definición de eliminar_cuenta.
+
+REGLA PARA FUTURAS VERSIONES
+- No sustituir archivos completos por versiones simplificadas.
+- Toda modificación deberá partir de esta versión o de una posterior verificada.
+- Antes de entregar una nueva versión se comprobará expresamente Recuerdos,
+  Avanzado, Métricas y Cuenta.

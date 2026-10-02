@@ -1270,13 +1270,14 @@ def cambiar_password(request: Request, payload: CambiarPasswordIn, usuario: str 
 
 @app.post("/api/cuenta/cambiar-email")
 @limiter.limit("5/hour")
-def eliminar_cuenta(request: Request, password: str = Form(...), usuario: str = Depends(obtener_usuario_actual)):
+def cambiar_email(request: Request, payload: EmailCuentaIn, usuario: str = Depends(obtener_usuario_actual)):
+    email_nuevo = payload.email.strip().lower()
     with db() as conn:
         row=conn.execute("SELECT password_hash,email FROM usuarios WHERE usuario=?",(usuario,)).fetchone()
-        if conn.execute("SELECT 1 FROM usuarios WHERE lower(email)=? AND usuario<>?",(payload.email,usuario)).fetchone(): raise HTTPException(status_code=400,detail="Ese correo ya está asociado a otra cuenta")
+        if conn.execute("SELECT 1 FROM usuarios WHERE lower(email)=? AND usuario<>?",(email_nuevo,usuario)).fetchone(): raise HTTPException(status_code=400,detail="Ese correo ya está asociado a otra cuenta")
     if not row or not bcrypt.checkpw(payload.password.encode(),row["password_hash"].encode()): raise HTTPException(status_code=403,detail="Contraseña incorrecta")
-    with db() as conn: conn.execute("UPDATE usuarios SET email=?,email_verificado=0 WHERE usuario=?",(payload.email,usuario))
-    try: enviar_verificacion_email(request,usuario,payload.email)
+    with db() as conn: conn.execute("UPDATE usuarios SET email=?,email_verificado=0 WHERE usuario=?",(email_nuevo,usuario))
+    try: enviar_verificacion_email(request,usuario,email_nuevo)
     except Exception:
         with db() as conn: conn.execute("UPDATE usuarios SET email=?,email_verificado=1 WHERE usuario=?",(row["email"],usuario))
         raise HTTPException(status_code=503,detail="No se ha podido enviar el correo. No se ha cambiado tu dirección.")
