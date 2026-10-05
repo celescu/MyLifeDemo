@@ -1868,16 +1868,46 @@ def contar_palabras_usuario(mensajes: list) -> int:
 
 @app.get("/api/metricas")
 def obtener_metricas(usuario: str = Depends(obtener_usuario_actual)):
+    """Devuelve las métricas de uso usando uso_ia como fuente principal.
+
+    Las tablas históricas de sesiones/autobiografía se conservan como respaldo
+    para datos creados antes de que existiera el registro detallado uso_ia.
+    Así evitamos perder métricas históricas, pero no duplicamos costes cuando
+    existe un registro real de la llamada a Anthropic.
+    """
     with db() as conn:
         filas = conn.execute(
             "SELECT id, fecha, fecha_cierre, cerrada, mensajes, tokens_input, tokens_output, titulo, modelo "
             "FROM sesiones WHERE usuario = ? AND (tipo IS NULL OR tipo = 'propia') ORDER BY id ASC",
             (usuario,),
         ).fetchall()
+        uso_filas = conn.execute(
+            "SELECT id, fecha, operacion, modelo, tokens_input, tokens_output, coste_usd, referencia "
+            "FROM uso_ia WHERE usuario=? ORDER BY id ASC",
+            (usuario,),
+        ).fetchall()
+        fila_autobio = conn.execute(
+            "SELECT tokens_input, tokens_output, modelo FROM autobiografia WHERE usuario = ?", (usuario,)
+        ).fetchone()
+        filas_recon = conn.execute(
+            "SELECT id, estado, inicio, fin FROM reconstrucciones WHERE usuario=? ORDER BY inicio DESC",
+            (usuario,),
+        ).fetchall()
+
+    def resumir_uso(filas_uso):
+        tokens_input = sum(int(u["tokens_input"] or 0) for u in filas_uso)
+        tokens_output = sum(int(u["tokens_output"] or 0) for u in filas_uso)
+        coste = sum(float(u["coste_usd"] or 0) for u in filas_uso)
+        modelos = []
+        for u in filas_uso:
+            if u["modelo"] not in modelos:
+                modelos.append(u["modelo"])
+        return tokens_input, tokens_output, coste, modelos
 
     sesiones = []
     total_tokens_input = 0
     total_tokens_output = 0
+    total_coste_sesiones = 0.0
     total_palabras = 0
     total_segundos = 0
 
@@ -1892,81 +1922,118 @@ def obtener_metricas(usuario: str = Depends(obtener_usuario_actual)):
             fin = datetime.utcnow()
         duracion_segundos = max(0, int((fin - inicio).total_seconds()))
 
-        modelo_sesion=f["modelo"] or obtener_modelo_usuario(usuario,"entrevista")
-        coste=coste_tokens_modelo(modelo_sesion,f["tokens_input"],f["tokens_output"])
+        # Una sesión puede generar varias llamadas: entrevista y cierre de
+        # sesión. uso_ia es la fuente real del consumo. Si no hay ninguna
+        # llamada asociada, usamos los tokens históricos como compatibilidad.
+        llamadas_sesion = [u for u in uso_filas if str(u["referencia"] or "") == str(f["id"])
+                           and u["operacion"] in {"entrevista", "cierre_sesion"}]
+        if llamadas_sesion:
+            ti, to, coste, modelos = resumir_uso(llamadas_sesion)
+            modelo_sesion = modelos[0] if len(modelos) == 1 else ", ".join(modelos)
+        else:
+            ti = int(f["tokens_input"] or 0)
+            to = int(f["tokens_output"] or 0)
+            modelo_sesion = f["modelo"] or obtener_modelo_usuario(usuario, "entrevista")
+            coste = coste_tokens_modelo(modelo_sesion, ti, to)
 
         sesiones.append({
             "id": f["id"],
             "titulo": f["titulo"] or calcular_titulo(mensajes),
             "fecha": f["fecha"],
             "cerrada": bool(f["cerrada"]),
-            "tokens_input": f["tokens_input"] or 0,
-            "tokens_output": f["tokens_output"] or 0,
+            "tokens_input": ti,
+            "tokens_output": to,
             "palabras_usuario": palabras,
             "duracion_segundos": duracion_segundos,
-            "coste_estimado": round(coste, 4),
+            "coste_estimado": round(coste, 6),
             "modelo": modelo_sesion,
-            "nombre_modelo": nombre_modelo(modelo_sesion),
+            "nombre_modelo": nombre_modelo(modelo_sesion) if "," not in modelo_sesion else modelo_sesion,
         })
 
-        total_tokens_input += f["tokens_input"] or 0
-        total_tokens_output += f["tokens_output"] or 0
+        total_tokens_input += ti
+        total_tokens_output += to
+        total_coste_sesiones += coste
         total_palabras += palabras
         total_segundos += duracion_segundos
 
-    total_coste_sesiones = sum(x["coste_estimado"] for x in sesiones)
-
-    with db() as conn:
-        fila_autobio = conn.execute(
-            "SELECT tokens_input, tokens_output, modelo FROM autobiografia WHERE usuario = ?", (usuario,)
-        ).fetchone()
-        filas_operaciones = conn.execute(
-            "SELECT operacion, COUNT(*) AS veces, COALESCE(SUM(tokens_input),0) AS tokens_input, COALESCE(SUM(tokens_output),0) AS tokens_output, COALESCE(SUM(coste_usd),0) AS coste FROM uso_ia WHERE usuario=? GROUP BY operacion ORDER BY coste DESC",
-            (usuario,),
-        ).fetchall()
-        filas_recon = conn.execute(
-            "SELECT id, estado, inicio, fin FROM reconstrucciones WHERE usuario=? ORDER BY inicio DESC",
-            (usuario,),
-        ).fetchall()
-    tokens_input_autobio = fila_autobio["tokens_input"] if fila_autobio else 0
-    tokens_output_autobio = fila_autobio["tokens_output"] if fila_autobio else 0
-    modelo_autobio=fila_autobio["modelo"] if fila_autobio and fila_autobio["modelo"] else obtener_modelo_usuario(usuario,"autobiografia")
-    coste_autobio=coste_tokens_modelo(modelo_autobio,tokens_input_autobio,tokens_output_autobio)
-
-    # Las sesiones y la autobiografía ya tienen sus tokens históricos guardados
-    # en sus tablas. El registro uso_ia añade operaciones que antes no tenían
-    # desglose propio (reconstrucciones, capítulos, mejoras e índices).
     operaciones = []
+    with db() as conn:
+        filas_operaciones = conn.execute(
+            "SELECT operacion, COUNT(*) AS veces, COALESCE(SUM(tokens_input),0) AS tokens_input, "
+            "COALESCE(SUM(tokens_output),0) AS tokens_output, COALESCE(SUM(coste_usd),0) AS coste "
+            "FROM uso_ia WHERE usuario=? GROUP BY operacion ORDER BY coste DESC",
+            (usuario,),
+        ).fetchall()
     for r in filas_operaciones:
-        operaciones.append({"operacion":r["operacion"],"veces":r["veces"],"tokens_input":int(r["tokens_input"] or 0),"tokens_output":int(r["tokens_output"] or 0),"coste_estimado":round(float(r["coste"] or 0),6)})
+        operaciones.append({
+            "operacion": r["operacion"],
+            "veces": int(r["veces"] or 0),
+            "tokens_input": int(r["tokens_input"] or 0),
+            "tokens_output": int(r["tokens_output"] or 0),
+            "coste_estimado": round(float(r["coste"] or 0), 6),
+        })
+
+    operaciones_autobio = {"autobiografia_indice", "autobiografia_capitulo", "autobiografia_mejora", "autobiografia_completa"}
+    uso_autobio = [u for u in uso_filas if u["operacion"] in operaciones_autobio]
+    if uso_autobio:
+        tokens_input_autobio, tokens_output_autobio, coste_autobio, _ = resumir_uso(uso_autobio)
+    else:
+        # Compatibilidad con autobiografías generadas antes del registro
+        # detallado. No se suma si ya existe cualquier uso_ia de autobiografía.
+        tokens_input_autobio = int(fila_autobio["tokens_input"] or 0) if fila_autobio else 0
+        tokens_output_autobio = int(fila_autobio["tokens_output"] or 0) if fila_autobio else 0
+        modelo_autobio = fila_autobio["modelo"] if fila_autobio and fila_autobio["modelo"] else obtener_modelo_usuario(usuario, "autobiografia")
+        coste_autobio = coste_tokens_modelo(modelo_autobio, tokens_input_autobio, tokens_output_autobio)
+
     coste_reconstrucciones = sum(o["coste_estimado"] for o in operaciones if o["operacion"] == "reconstruccion")
     coste_aportaciones = sum(o["coste_estimado"] for o in operaciones if o["operacion"] == "aportacion_externa")
-    coste_operaciones_extra = sum(o["coste_estimado"] for o in operaciones if o["operacion"] in {"autobiografia_indice","autobiografia_capitulo","autobiografia_mejora"})
+    coste_operaciones_extra = sum(o["coste_estimado"] for o in operaciones if o["operacion"] in {"autobiografia_indice", "autobiografia_capitulo", "autobiografia_mejora"})
+    tokens_recon_input = sum(o["tokens_input"] for o in operaciones if o["operacion"] == "reconstruccion")
+    tokens_recon_output = sum(o["tokens_output"] for o in operaciones if o["operacion"] == "reconstruccion")
+    tokens_aport_input = sum(o["tokens_input"] for o in operaciones if o["operacion"] == "aportacion_externa")
+    tokens_aport_output = sum(o["tokens_output"] for o in operaciones if o["operacion"] == "aportacion_externa")
 
     reconstrucciones = []
     for r in filas_recon:
-        coste = coste_uso_ia(usuario, "reconstruccion", r["id"])
-        with db() as conn:
-            u = conn.execute("SELECT COALESCE(SUM(tokens_input),0) ti, COALESCE(SUM(tokens_output),0) to_ FROM uso_ia WHERE usuario=? AND operacion='reconstruccion' AND referencia=?", (usuario, str(r["id"]))).fetchone()
-        reconstrucciones.append({"id":r["id"],"estado":r["estado"],"inicio":r["inicio"],"fin":r["fin"],"tokens_input":int(u["ti"] or 0),"tokens_output":int(u["to_"] or 0),"coste_estimado":round(coste,6)})
+        filas_r = [u for u in uso_filas if u["operacion"] == "reconstruccion" and str(u["referencia"] or "") == str(r["id"])]
+        ti, to, coste, modelos = resumir_uso(filas_r)
+        reconstrucciones.append({
+            "id": r["id"],
+            "estado": r["estado"],
+            "inicio": r["inicio"],
+            "fin": r["fin"],
+            "tokens_input": ti,
+            "tokens_output": to,
+            "coste_estimado": round(coste, 6),
+        })
 
-    coste_total = total_coste_sesiones + coste_autobio + coste_reconstrucciones + coste_aportaciones + coste_operaciones_extra
+    # Todas las llamadas reales quedan contabilizadas exactamente una vez:
+    # sesiones + autobiografía + operaciones restantes (aportaciones y
+    # reconstrucciones). Las operaciones de autobiografía ya están incluidas
+    # en coste_autobio y no se vuelven a sumar aquí.
+    coste_total = total_coste_sesiones + coste_autobio + coste_reconstrucciones + coste_aportaciones
+    tokens_input_total = total_tokens_input + tokens_input_autobio + tokens_recon_input + tokens_aport_input
+    tokens_output_total = total_tokens_output + tokens_output_autobio + tokens_recon_output + tokens_aport_output
+
     return {
         "sesiones": sesiones,
         "reconstrucciones": reconstrucciones,
         "operaciones": operaciones,
         "totales": {
             "num_sesiones": len(sesiones),
-            "tokens_input": total_tokens_input + tokens_input_autobio,
-            "tokens_output": total_tokens_output + tokens_output_autobio,
+            "tokens_input": tokens_input_total,
+            "tokens_output": tokens_output_total,
             "palabras_usuario": total_palabras,
             "duracion_segundos": total_segundos,
-            "coste_estimado": round(coste_total, 4),
-            "coste_sesiones": round(total_coste_sesiones, 4),
-            "coste_autobiografia": round(coste_autobio, 4),
-            "coste_reconstrucciones": round(coste_reconstrucciones, 4),
-            "coste_aportaciones_externas": round(coste_aportaciones, 4),
-            "coste_operaciones_autobiografia": round(coste_operaciones_extra, 4),
+            "coste_estimado": round(coste_total, 6),
+            "coste_sesiones": round(total_coste_sesiones, 6),
+            "coste_autobiografia": round(coste_autobio, 6),
+            "tokens_input_autobiografia": tokens_input_autobio,
+            "tokens_output_autobiografia": tokens_output_autobio,
+            "coste_reconstrucciones": round(coste_reconstrucciones, 6),
+            "coste_aportaciones_externas": round(coste_aportaciones, 6),
+            "coste_operaciones_autobiografia": round(coste_operaciones_extra, 6),
+            "llamadas_ia": len(uso_filas),
         },
     }
 

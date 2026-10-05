@@ -1,36 +1,54 @@
-MEMORICORDE — ÚLTIMA VERSIÓN CORRECTA
-Fecha: 2026-10-02
+MEMORICORDE — VERSIÓN MÉTRICAS CONSOLIDADAS — 2026-10-04
 
-BASE
-- Base funcional: Fase A de 2026-09-30, que conserva el editor visual de Recuerdos,
-  el menú Avanzado y la vista Métricas.
-- Se incorpora únicamente el registro detallado de consumo de IA de la versión
-  de costes, corrigiendo antes la regresión que había sustituido cambiar-email.
+Versión de partida:
+- Memoricorde — Última versión correcta — 2026-10-02
+- Archivo de referencia: Memoricorde-ultima-version-correcta-2026-10-02.zip
 
-CONSERVADO
-- Editor visual de Recuerdos y marcado de campos editados manualmente.
-- Menú AVANZADO.
-- Métricas de uso.
-- Reconstrucción de recuerdos con progreso, cancelación y reanudación.
-- Autobiografía por capítulos y autobiografía completa.
-- Aportaciones familiares.
-- Registro, verificación de correo y recuperación de contraseña.
-- Cuenta, cambio de contraseña, cambio de correo y eliminación de cuenta.
-- Aislamiento de datos entre usuarios.
-- Configuración de modelos estándar/avanzado.
-- Resend con User-Agent memoricorde/1.0.
+Objetivo de esta versión:
+- Consolidar las métricas de consumo de IA tomando la tabla uso_ia como fuente
+  principal del consumo real registrado por llamada.
 
-AÑADIDO
-- Tabla uso_ia para registrar llamadas reales a Anthropic.
-- Coste estimado por modelo y operación.
-- Desglose de costes de entrevistas, aportaciones, autobiografía y reconstrucciones.
+Cambios realizados:
+1. main.py
+   - /api/metricas utiliza uso_ia para calcular tokens y coste de las sesiones
+     cuando existen registros reales asociados a la sesión.
+   - Una sesión puede acumular correctamente varias llamadas (entrevista y
+     cierre_sesion) sin recalcular el coste desde datos históricos acumulados.
+   - El coste de autobiografía se obtiene de todas las operaciones registradas
+     en uso_ia: índice, capítulos, mejoras y autobiografía completa.
+   - El coste de reconstrucciones se obtiene de sus llamadas reales registradas
+     en uso_ia y se mantiene el desglose por reconstrucción.
+   - El coste de aportaciones externas se incluye en el coste total.
+   - Los tokens totales incluyen sesiones, autobiografía, reconstrucciones y
+     aportaciones externas, evitando la omisión existente en la versión anterior.
+   - Se mantiene un mecanismo de compatibilidad para datos históricos que no
+     dispongan todavía de registros en uso_ia: sesiones y autobiografía pueden
+     utilizar sus tokens almacenados como respaldo.
+   - No se modifican las funciones que realizan las llamadas a Anthropic ni el
+     registro de uso_ia.
 
-CORRECCIÓN
-- Restaurado el endpoint /api/cuenta/cambiar-email que había quedado
-  accidentalmente reemplazado por una segunda definición de eliminar_cuenta.
+2. static/app.html
+   - Se mantiene la vista existente de Métricas de uso.
+   - Se añade un desglose visible de consumo por operación, con número de
+     llamadas, tokens y coste.
+   - No se modifica el editor visual de Recuerdos ni las demás vistas.
 
-REGLA PARA FUTURAS VERSIONES
-- No sustituir archivos completos por versiones simplificadas.
-- Toda modificación deberá partir de esta versión o de una posterior verificada.
-- Antes de entregar una nueva versión se comprobará expresamente Recuerdos,
-  Avanzado, Métricas y Cuenta.
+Archivos afectados:
+- main.py
+- static/app.html
+- CHANGELOG_VERSION.txt
+
+Comprobaciones realizadas:
+- Tabla uso_ia y registrar_consumo_ia revisados.
+- Rutas de registro de consumo de entrevista, cierre de sesión, aportación
+  externa, reconstrucción y operaciones de autobiografía revisadas.
+- main.py supera comprobación de sintaxis con py_compile.
+- JavaScript de app.html supera comprobación de sintaxis con Node.
+- Diff respecto a la versión de referencia: únicamente main.py y app.html
+  contienen cambios funcionales.
+- No se incluye ninguna base de datos de producción.
+
+Limitación de verificación:
+- No se pudo ejecutar una prueba integrada completa de FastAPI y SQLCipher en
+  este entorno porque falta el paquete Python bcrypt. Por ello no se afirma
+  que el endpoint haya sido ejecutado extremo a extremo aquí.
