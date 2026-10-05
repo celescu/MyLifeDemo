@@ -365,6 +365,7 @@
       <div id="tarjetas-metricas-totales" class="tarjetas-metricas"></div>
       <div id="grafico-metricas" style="margin-bottom:24px;"></div>
       <div id="tabla-metricas-sesiones"></div>
+      <div id="tabla-metricas-operaciones" style="margin-top:24px;"></div>
     </section>
 
     <section id="vista-autobiografia" class="bloque-vista" style="display:none;">
@@ -1436,6 +1437,35 @@ async function abrirMetricas() {
       <tbody>${filas}</tbody>
     </table>
   `;
+
+  const nombresOperaciones = {
+    entrevista: 'Entrevista',
+    cierre_sesion: 'Cierre de sesión',
+    aportacion_externa: 'Aportación externa',
+    reconstruccion: 'Reconstrucción de recuerdos',
+    autobiografia_indice: 'Índice de autobiografía',
+    autobiografia_capitulo: 'Generación de capítulo',
+    autobiografia_mejora: 'Mejora de capítulo',
+    autobiografia_completa: 'Autobiografía completa'
+  };
+  const operaciones = document.getElementById('tabla-metricas-operaciones');
+  if (operaciones && data.operaciones.length) {
+    const filasOperaciones = data.operaciones.map(o => `
+      <tr>
+        <td>${nombresOperaciones[o.operacion] || o.operacion}</td>
+        <td>${o.veces}</td>
+        <td>${(o.tokens_input + o.tokens_output).toLocaleString('es-ES')}</td>
+        <td>$${o.coste_estimado.toFixed(4)}</td>
+      </tr>`).join('');
+    operaciones.innerHTML = `
+      <h3 style="font-family: system-ui, sans-serif; margin-bottom:8px;">Consumo por operación</h3>
+      <table class="tabla-metricas">
+        <thead><tr><th>Operación</th><th>Veces</th><th>Tokens</th><th>Coste</th></tr></thead>
+        <tbody>${filasOperaciones}</tbody>
+      </table>`;
+  } else if (operaciones) {
+    operaciones.innerHTML = '<p style="font-family: system-ui, sans-serif; font-size: 0.85rem;">Todavía no hay llamadas de IA registradas.</p>';
+  }
 }
 
 function dibujarGraficoCoste(sesiones) {
