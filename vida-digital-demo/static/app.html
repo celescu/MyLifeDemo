@@ -257,7 +257,16 @@
     .barra-superior { min-height:68px; align-items:flex-start; padding-top:13px; flex-direction:column; gap:7px; }
     .navegacion { width:100%; overflow-x:auto; flex-wrap:nowrap; padding-bottom:7px; }
     .nav-boton,.nav-enlace { white-space:nowrap; padding:6px 8px; }
-    .contenido { padding-top:30px; }
+    .faq-lista { max-width:760px; margin:0 auto; }
+  .faq-lista details { border-top:1px solid var(--linea); padding:0; }
+  .faq-lista details:last-child { border-bottom:1px solid var(--linea); }
+  .faq-lista summary { cursor:pointer; list-style:none; padding:16px 4px; font-size:1rem; font-weight:600; }
+  .faq-lista summary::-webkit-details-marker { display:none; }
+  .faq-lista summary:after { content:'+'; float:right; font-family:system-ui,sans-serif; font-weight:400; color:var(--sello); }
+  .faq-lista details[open] summary:after { content:'−'; }
+  .faq-lista details p { margin:0 4px 18px; color:var(--tinta-suave); line-height:1.7; }
+
+  .contenido { padding-top:30px; }
     .entrevista-meta { align-items:flex-start; flex-direction:column; gap:2px; }
     .acciones-principales { align-items:stretch; flex-direction:column; }
     .acciones-izquierda,.acciones-derecha { width:100%; }
@@ -299,6 +308,7 @@
         <button id="btn-cuenta" class="nav-boton" onclick="alternarCuenta(event)">Cuenta</button>
         <div id="menu-cuenta" class="menu-cuenta">
           <button onclick="abrirCuestionario(); cerrarCuenta();">Cómo me veo</button>
+          <button onclick="abrirFaq(); cerrarCuenta();">Ayuda y preguntas frecuentes</button>
           <button onclick="abrirMisDatos(); cerrarCuenta();">Privacidad y datos</button>
           <a class="nav-enlace" href="/seguridad.html" style="display:block;padding:10px 11px;">Privacidad y seguridad</a>
           <div class="separador-menu"></div>
@@ -354,9 +364,45 @@
     <section id="vista-cuestionario" class="bloque-vista" style="display:none;">
       <div class="vista-barra"><h2>Cómo me veo</h2><button class="boton-texto" onclick="mostrarEntrevista()">Volver a conversar</button></div>
       <div class="cuestionario">
-        <p class="subtitulo-seccion" style="margin-bottom:28px;">Una reflexión personal, no un diagnóstico. Tus respuestas ayudan a la entrevistadora a conocerte mejor.</p>
+        <p class="subtitulo-seccion" style="margin-bottom:28px;">Una reflexión personal, no un diagnóstico. Tus respuestas ayudan a Lira a conocerte mejor.</p>
         <div id="preguntas-cuestionario"></div>
         <div class="acciones-principales"><button id="btn-guardar-cuestionario" class="boton-principal" onclick="guardarCuestionario()">Guardar respuestas</button></div>
+      </div>
+    </section>
+
+    <section id="vista-faq" class="bloque-vista" style="display:none;">
+      <div class="vista-barra"><h2>Ayuda y preguntas frecuentes</h2><button class="boton-texto" onclick="mostrarEntrevista()">Volver a conversar</button></div>
+      <p class="subtitulo-seccion" style="margin-bottom:24px;">Aquí encontrarás respuestas sobre las principales funciones de Memoricorde y sobre cómo sacarles partido.</p>
+
+      <div class="faq-lista">
+        <details open><summary>¿Qué es Lira y qué hace?</summary><p>Lira es la entrevistadora de Memoricorde. Mantiene contigo conversaciones sobre tu vida, recuerda lo que ya has contado y formula preguntas de seguimiento para profundizar en personas, lugares, acontecimientos y etapas que puedan ser importantes para tu historia.</p></details>
+        <details><summary>¿Tengo que responder exactamente a lo que pregunta Lira?</summary><p>No. Puedes responder a la pregunta, cambiar de tema si algo te lleva a otro recuerdo o contar algo que consideres importante. Lira intenta seguir el hilo de lo que estás contando en lugar de obligarte a volver a la pregunta original.</p></details>
+        <details><summary>¿Puedo continuar otro día?</summary><p>Sí. Las conversaciones se guardan como sesiones y puedes retomarlas más adelante. Lira utiliza la información que ya conserva de sesiones anteriores para evitar repetir innecesariamente lo que ya has contado.</p></details>
+        <details><summary>¿Qué son «Sorpréndeme» y «Terminar por hoy»?</summary><p>«Sorpréndeme» permite que Lira elija una línea de conversación menos previsible a partir de lo que conoce de tu historia. «Terminar por hoy» cierra la sesión actual sin borrar lo que has contado.</p></details>
+        <details><summary>¿Puedo corregir una respuesta que ya he dado?</summary><p>Sí. Puedes editar tus respuestas desde la conversación o desde la transcripción de una sesión. Al corregir una respuesta, las respuestas posteriores de Lira que dependían de ella pueden descartarse para que la conversación pueda continuar desde la información corregida.</p></details>
+        <details><summary>¿Puedo dictar mis respuestas?</summary><p>Cuando el navegador lo permite, puedes utilizar «Dictar». El texto reconocido aparece en el campo de respuesta antes de enviarlo, de modo que puedes corregir errores de reconocimiento.</p></details>
+
+        <details><summary>¿Qué son mis Recuerdos?</summary><p>Son una representación estructurada de lo que Memoricorde ha podido reconstruir de tus conversaciones: infancia, familia, lugares, estudios, trabajo, relaciones, cambios, valores, aficiones y otros aspectos de tu vida. Puedes consultarlos y editarlos manualmente.</p></details>
+        <details><summary>¿Puedo modificar un recuerdo?</summary><p>Sí. El editor de Recuerdos permite modificar los datos conservados. Las modificaciones manuales se marcan para que una reconstrucción posterior no las sustituya automáticamente.</p></details>
+        <details><summary>¿Qué hace «Reconstruir recuerdos desde las conversaciones»?</summary><p>Vuelve a analizar las conversaciones guardadas para actualizar la memoria estructurada. Es una operación más costosa que una conversación normal, por lo que Memoricorde muestra su progreso y permite cancelar conservando el avance para reanudarlo después.</p></details>
+        <details><summary>¿Una reconstrucción puede borrar mis cambios manuales?</summary><p>Los campos y elementos de cronología marcados como modificados manualmente están protegidos frente a la reconstrucción. Aun así, conviene revisar los recuerdos después de una reconstrucción, especialmente cuando haya información contradictoria en distintas sesiones.</p></details>
+
+        <details><summary>¿Cómo funciona la autobiografía?</summary><p>La autobiografía se construye a partir de la información que Memoricorde ha organizado. Puedes elegir un tono, proponer una estructura, generar capítulos pendientes y, cuando quieras, generar una autobiografía completa.</p></details>
+        <details><summary>¿Qué diferencia hay entre generar capítulos y generar la autobiografía completa?</summary><p>La generación por capítulos permite trabajar y revisar cada parte por separado. La generación completa solicita un relato unificado. Las distintas operaciones pueden tener costes de IA diferentes y se registran por separado en las métricas.</p></details>
+        <details><summary>¿Puedo cambiar el tono de la autobiografía?</summary><p>Sí. Puedes elegir entre Natural, Literario, Sobrio, Íntimo y Mixto. El tono orienta la redacción, pero el contenido procede de la información que has proporcionado y de la memoria estructurada.</p></details>
+
+        <details><summary>¿Puedo pedir a familiares o allegados que aporten recuerdos?</summary><p>Sí. Desde «Familia» puedes invitar a otra persona a aportar recuerdos sobre tu vida. Esas aportaciones quedan diferenciadas de tus propias sesiones y pueden contribuir a enriquecer la reconstrucción de tu historia.</p></details>
+        <details><summary>¿Qué es «Cómo me veo»?</summary><p>Es un cuestionario de reflexión personal. No pretende realizar un diagnóstico. Sus respuestas sirven para aportar a Lira información adicional sobre cómo te ves y ayudarla a conocerte mejor en futuras conversaciones.</p></details>
+
+        <details><summary>¿Qué muestran las Métricas de uso?</summary><p>Muestran el consumo de inteligencia artificial asociado a tu cuenta: sesiones, tokens, tiempo, coste estimado y desglose por tipo de operación. El registro técnico distingue el modelo utilizado, los tokens de entrada y salida y el coste calculado de cada llamada.</p></details>
+        <details><summary>¿Por qué el coste de una operación puede variar?</summary><p>El coste depende del modelo utilizado, de la cantidad de información enviada al modelo y de la cantidad de texto que este genera. Por eso dos operaciones aparentemente similares pueden tener costes distintos.</p></details>
+
+        <details><summary>¿Puedo descargar mis datos?</summary><p>Sí. En «Cuenta → Privacidad y datos» puedes gestionar tu cuenta y descargar una copia de tus datos. También existen opciones para restaurarlos o eliminar tus datos según las funciones disponibles en esa sección.</p></details>
+        <details><summary>¿Puedo cambiar mi correo o contraseña?</summary><p>Sí. En «Cuenta → Privacidad y datos» puedes cambiar la dirección de correo y la contraseña siguiendo las comprobaciones de seguridad correspondientes.</p></details>
+        <details><summary>¿Qué ocurre si elimino mi cuenta?</summary><p>La eliminación de la cuenta es permanente y elimina la cuenta y los datos asociados. Es una acción que no debe utilizarse como una forma de cerrar sesión: para salir temporalmente utiliza «Cerrar sesión».</p></details>
+        <details><summary>¿Cómo protege Memoricorde mis datos?</summary><p>La aplicación utiliza autenticación mediante sesión, contraseñas almacenadas mediante hash, cookies con atributos de seguridad y comprobaciones de propiedad para impedir que un usuario acceda a los datos de otro. Puedes consultar los detalles en «Privacidad y medidas de seguridad».</p></details>
+
+        <details><summary>¿Qué hago si una función no responde o aparece un error?</summary><p>Primero recarga la página y vuelve a intentarlo. Si el problema persiste, conserva el mensaje de error y, si es posible, indica qué función estabas utilizando y qué acción realizaste justo antes de que apareciera. No compartas tu contraseña ni credenciales de acceso.</p></details>
       </div>
     </section>
 
@@ -455,7 +501,7 @@
 
 <script>
 function ocultarVistas() {
-  ['vista-entrevista','vista-cuestionario','vista-metricas','vista-autobiografia','vista-mis-datos'].forEach(id => {
+  ['vista-entrevista','vista-cuestionario','vista-faq','vista-metricas','vista-autobiografia','vista-mis-datos'].forEach(id => {
     const el = document.getElementById(id);
     if (el) el.style.display = 'none';
   });
@@ -478,6 +524,10 @@ function mostrarConversaciones() {
 function mostrarAportaciones() {
   mostrarEntrevista();
   verAportaciones({target: document.getElementById('nav-aportaciones')});
+}
+function abrirFaq() {
+  ocultarVistas();
+  document.getElementById('vista-faq').style.display = 'block';
 }
 function alternarFamilia(event) {
   event.stopPropagation();
@@ -731,7 +781,7 @@ function mostrarEscribiendo() {
   const div = document.createElement('div');
   div.id = 'indicador-escribiendo';
   div.className = 'escribiendo';
-  div.innerHTML = 'la entrevistadora está pensando <span class="punto"></span><span class="punto"></span><span class="punto"></span>';
+  div.innerHTML = 'Lira está pensando <span class="punto"></span><span class="punto"></span><span class="punto"></span>';
   chat.appendChild(div);
   chat.scrollTop = chat.scrollHeight;
 }
@@ -748,7 +798,7 @@ function añadirMensaje(rol, texto, indice = null) {
   if (indice !== null) div.dataset.mensajeIndice = String(indice);
   const etiqueta = document.createElement('span');
   etiqueta.className = 'etiqueta';
-  etiqueta.textContent = rol === 'user' ? 'tú escribiste' : 'la entrevistadora';
+  etiqueta.textContent = rol === 'user' ? 'tú escribiste' : 'Lira';
   const cuerpo = document.createElement('span');
   cuerpo.className = 'mensaje-cuerpo';
   cuerpo.textContent = texto;
@@ -814,7 +864,7 @@ async function editarMensajeEnChat(indice, textoActual) {
       if (data.turnos_descartados > 0) {
         const aviso = document.createElement('div');
         aviso.className = 'autobio-status';
-        aviso.textContent = `Corrección guardada. Se han descartado ${data.turnos_descartados} turnos posteriores porque dependían de la respuesta anterior. Pulsa «Continuar» para que la entrevistadora responda de nuevo.`;
+        aviso.textContent = `Corrección guardada. Se han descartado ${data.turnos_descartados} turnos posteriores porque dependían de la respuesta anterior. Pulsa «Continuar» para que Lira responda de nuevo.`;
         document.getElementById('chat').appendChild(aviso);
       }
     } catch (e) {
@@ -1220,7 +1270,7 @@ async function verTranscripcion(id, titulo) {
       bloque.style.cssText = 'margin-bottom:22px;';
       const etiqueta = document.createElement('div');
       etiqueta.style.cssText = 'font-family:system-ui,sans-serif;font-size:.64rem;letter-spacing:.1em;text-transform:uppercase;color:var(--sello);margin-bottom:5px;';
-      etiqueta.textContent = m.role === 'user' ? 'Tú' : 'La entrevistadora';
+      etiqueta.textContent = m.role === 'user' ? 'Tú' : 'Lira';
       const texto = document.createElement('div');
       texto.style.cssText = 'white-space:pre-wrap;line-height:1.65;';
       texto.textContent = m.content;
@@ -1373,7 +1423,7 @@ async function guardarCuestionario() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ respuestas: respuestasCuestionario }),
     });
-    alert('Respuestas guardadas. La entrevistadora las tendrá en cuenta a partir de tu próxima sesión.');
+    alert('Respuestas guardadas. Lira las tendrá en cuenta a partir de tu próxima sesión.');
   } catch (e) {
     alert('Hubo un problema al guardar. Inténtalo de nuevo.');
   } finally {
