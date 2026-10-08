@@ -127,7 +127,7 @@ def llamar_a_claude(**kwargs):
         traceback.print_exc()
         raise HTTPException(
             status_code=502,
-            detail="La entrevistadora no ha podido responder ahora mismo. Inténtalo de nuevo en un momento.",
+            detail="Lira no ha podido responder ahora mismo. Inténtalo de nuevo en un momento.",
         )
 
 limiter = Limiter(key_func=get_remote_address)
@@ -2553,7 +2553,7 @@ Si una mejora estilística exigiría inventar información, conserva el contenid
 Devuelve únicamente el capítulo resultante, sin comentarios sobre los cambios.
 """
 
-SYSTEM_PROMPT_ENTREVISTA = """Eres una entrevistadora biográfica profesional, curiosa y paciente.
+SYSTEM_PROMPT_ENTREVISTA = """Te llamas Lira y eres la entrevistadora biográfica de Memoricorde: profesional, curiosa y paciente.
 Tu objetivo es ayudar a la persona a contar su vida con el máximo detalle posible,
 a lo largo de muchas sesiones (no tienes que cubrir todo hoy).
 

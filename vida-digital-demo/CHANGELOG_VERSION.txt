@@ -52,3 +52,47 @@ Limitación de verificación:
 - No se pudo ejecutar una prueba integrada completa de FastAPI y SQLCipher en
   este entorno porque falta el paquete Python bcrypt. Por ello no se afirma
   que el endpoint haya sido ejecutado extremo a extremo aquí.
+
+
+MEMORICORDE — VERSIÓN LIRA Y AYUDA — 2026-10-08
+
+Versión de partida:
+- Memoricorde — versión métricas consolidadas — 2026-10-04
+- Archivo de referencia: Memoricorde-metricas-consolidadas-2026-10-04.zip
+
+Cambios realizados:
+1. Identidad de la entrevistadora
+   - La entrevistadora pasa a llamarse Lira.
+   - Se actualiza la interfaz para mostrar «Lira» en lugar de «la entrevistadora» en los mensajes y avisos visibles.
+   - Se actualiza el prompt principal de entrevista para identificar a la asistente como Lira.
+   - La página de introducción explica de forma artística el vínculo entre Memoricorde, la memoria, la cuerda y Lira como nombre femenino y como instrumento de cuerda.
+
+2. Ayuda y preguntas frecuentes
+   - Se añade una vista «Ayuda y preguntas frecuentes».
+   - Se incorpora al menú Cuenta.
+   - Incluye preguntas sobre conversación con Lira, sesiones, edición de respuestas, dictado, Recuerdos, reconstrucción, autobiografía, aportaciones familiares, autopercepción, métricas, datos, cuenta, seguridad y resolución básica de problemas.
+   - La vista incluye botón «Volver a conversar».
+   - Se añade también un acceso informativo a preguntas frecuentes en el pie de la página pública.
+
+Archivos afectados:
+- main.py
+- static/app.html
+- static/index.html
+- CHANGELOG_VERSION.txt
+
+Funcionalidades preservadas:
+- Editor visual de Recuerdos.
+- Métricas de uso y desglose por operación.
+- Reconstrucción de recuerdos con progreso/cancelación.
+- Autobiografía por capítulos y completa.
+- Familia y aportaciones externas.
+- Cuenta, privacidad, datos y seguridad.
+
+Comprobaciones:
+- Sintaxis Python revisada con py_compile.
+- Sintaxis JavaScript de app.html revisada con Node.
+- No se incluye ninguna base de datos de producción.
+- No se modifican endpoints de datos ni lógica de persistencia para estas mejoras.
+
+Limitación:
+- No se ejecuta aquí una prueba extremo a extremo de FastAPI porque el entorno no dispone de todas las dependencias de producción.
