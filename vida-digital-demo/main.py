@@ -200,7 +200,7 @@ def _ejecutar_reconstruccion(job_id,usuario,filas):
                 transcripcion="\n".join(f"{m['role']}: {m['content']}" for m in mensajes if m["role"] in ("user","assistant"))
                 nuevo,titulo,respuesta=construir_resumen_desde_transcripcion(usuario,resumen_actual,transcripcion,operacion="reconstruccion",referencia=job_id)
                 if nuevo is None: raise RuntimeError("El modelo no devolvió la herramienta de memoria.")
-                resumen_actual=nuevo; registrar_uso_diario(usuario,respuesta.usage.input_tokens,respuesta.usage.output_tokens); marcar_cerrada(sid)
+                resumen_actual=nuevo; registrar_uso_diario(usuario,respuesta.usage.input_tokens,respuesta.usage.output_tokens, es_mensaje_conversacion=False); marcar_cerrada(sid)
                 if titulo: aplicar_titulo_generado(sid,titulo)
                 guardar_resumen(usuario,resumen_actual); procesadas+=1; hechas.add(sid); errores=[e for e in errores if e.get("sesion_id")!=sid]
                 _guardar_estado_reconstruccion(job_id,procesadas=procesadas,errores=json.dumps(errores,ensure_ascii=False),procesadas_ids=json.dumps(sorted(hechas)),mensaje=f"Sesión {sid} reconstruida correctamente.")
@@ -445,6 +445,7 @@ def init_db_sobre(conn):
         ("tipo", "TEXT DEFAULT 'propia'"),
         ("aportante_nombre", "TEXT"),
         ("aportante_relacion", "TEXT"),
+        ("avisos_uso_indebido", "INTEGER DEFAULT 0"),
     ]:
         if columna not in columnas_existentes:
             conn.execute(f"ALTER TABLE sesiones ADD COLUMN {columna} {definicion}")
@@ -491,20 +492,29 @@ def migrar_a_cifrado_si_es_necesario():
         destino.write(origen.read())
 
     # 2. Leer todos los datos con sqlite3 normal
-    conn_origen = sqlite3.connect(DB_PATH)
-    conn_origen.row_factory = sqlite3.Row
-    tablas = conn_origen.execute(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
-    ).fetchall()
-    datos_por_tabla = {}
-    for t in tablas:
-        nombre = t["name"]
-        filas = conn_origen.execute(f"SELECT * FROM {nombre}").fetchall()
-        datos_por_tabla[nombre] = [dict(f) for f in filas]
-    conn_origen.close()
+    conn_origen = None
+    ruta_temporal = DB_PATH + ".cifrado.tmp"
+    try:
+        conn_origen = sqlite3.connect(DB_PATH)
+        conn_origen.row_factory = sqlite3.Row
+        tablas = conn_origen.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+        ).fetchall()
+        datos_por_tabla = {}
+        for t in tablas:
+            nombre = t["name"]
+            filas = conn_origen.execute(f"SELECT * FROM {nombre}").fetchall()
+            datos_por_tabla[nombre] = [dict(f) for f in filas]
+    except Exception:
+        if os.path.exists(ruta_temporal):
+            try: os.remove(ruta_temporal)
+            except OSError: pass
+        raise
+    finally:
+        if conn_origen is not None:
+            conn_origen.close()
 
     # 3. Crear una base de datos nueva, cifrada, en un archivo temporal
-    ruta_temporal = DB_PATH + ".cifrado.tmp"
     if os.path.exists(ruta_temporal):
         os.remove(ruta_temporal)
 
@@ -918,6 +928,9 @@ def obtener_o_crear_sesion(usuario: str, sesion_id: int | None) -> tuple[int, li
                         detail="Esta es una sesión de aportación externa; ciérrala desde 'Ver aportaciones' en vez de continuarla aquí.",
                     )
                 return row["id"], json.loads(row["mensajes"]), row["fecha"]
+            # No crear una sesión nueva silenciosamente si se ha enviado un ID inválido
+            # o perteneciente a otro usuario. Evita confusiones y refuerza el aislamiento.
+            raise HTTPException(status_code=403, detail="Sesión no encontrada o no autorizada")
         fecha = datetime.utcnow().isoformat()
         cur = conn.execute(
             "INSERT INTO sesiones (usuario, fecha, mensajes, modelo) VALUES (?, ?, ?, ?)",
@@ -943,6 +956,12 @@ def sumar_tokens(sesion_id: int, tokens_input: int, tokens_output: int):
         )
 
 
+def obtener_avisos_uso_indebido(sesion_id: int) -> int:
+    with db() as conn:
+        fila = conn.execute("SELECT avisos_uso_indebido FROM sesiones WHERE id = ?", (sesion_id,)).fetchone()
+    return int(fila["avisos_uso_indebido"] or 0) if fila else 0
+
+
 def marcar_cerrada(sesion_id: int):
     with db() as conn:
         conn.execute(
@@ -958,23 +977,25 @@ def calcular_coste(tokens_input: int, tokens_output: int) -> float:
     )
 
 
-def registrar_uso_diario(usuario: str, tokens_input: int, tokens_output: int):
+def registrar_uso_diario(usuario: str, tokens_input: int, tokens_output: int, es_mensaje_conversacion: bool = True):
+    """Registra tokens diarios; solo incrementa la cuota de mensajes en turnos conversacionales."""
     fecha = datetime.utcnow().date().isoformat()
+    incremento_mensajes = 1 if es_mensaje_conversacion else 0
     with db() as conn:
         conn.execute(
             """
             INSERT INTO uso_diario (usuario, fecha, mensajes, tokens_input, tokens_output)
-            VALUES (?, ?, 1, ?, ?)
+            VALUES (?, ?, ?, ?, ?)
             ON CONFLICT(usuario, fecha) DO UPDATE SET
-                mensajes = mensajes + 1,
+                mensajes = mensajes + excluded.mensajes,
                 tokens_input = tokens_input + excluded.tokens_input,
                 tokens_output = tokens_output + excluded.tokens_output
             """,
-            (usuario, fecha, tokens_input, tokens_output),
+            (usuario, fecha, incremento_mensajes, tokens_input, tokens_output),
         )
 
 
-def comprobar_limite_diario(usuario: str):
+def comprobar_limite_diario(usuario: str, comprobar_mensajes: bool = True):
     """Bloquea antes de llamar a la API si el usuario ya ha agotado su
     límite diario de mensajes o de coste estimado, para no gastar ni un
     token de más una vez alcanzado el tope."""
@@ -986,7 +1007,7 @@ def comprobar_limite_diario(usuario: str):
         ).fetchone()
     if not row:
         return
-    if row["mensajes"] >= LIMITE_MENSAJES_DIARIOS:
+    if comprobar_mensajes and row["mensajes"] >= LIMITE_MENSAJES_DIARIOS:
         raise HTTPException(
             status_code=429,
             detail=f"Has llegado al límite de {LIMITE_MENSAJES_DIARIOS} mensajes de hoy. Puedes continuar mañana.",
@@ -1019,6 +1040,8 @@ def exportar_datos_usuario(usuario: str) -> dict:
         autobio_proyecto = conn.execute("SELECT * FROM autobiografia_proyectos WHERE usuario = ?", (usuario,)).fetchone()
         autobio_capitulos = conn.execute("SELECT * FROM autobiografia_capitulos WHERE usuario = ? ORDER BY orden, id", (usuario,)).fetchall()
         estrategia = conn.execute("SELECT * FROM estrategia_entrevista WHERE usuario = ?", (usuario,)).fetchone()
+        uso_ia = conn.execute("SELECT fecha, operacion, modelo, tokens_input, tokens_output, coste_usd, referencia FROM uso_ia WHERE usuario = ? ORDER BY fecha, id", (usuario,)).fetchall()
+        uso_diario = conn.execute("SELECT fecha, mensajes, tokens_input, tokens_output FROM uso_diario WHERE usuario = ? ORDER BY fecha", (usuario,)).fetchall()
     return {
         "formato": "backup-individual-v1",
         "usuario": usuario,
@@ -1031,6 +1054,8 @@ def exportar_datos_usuario(usuario: str) -> dict:
         "autobiografia_proyecto": dict(autobio_proyecto) if autobio_proyecto else None,
         "autobiografia_capitulos": [dict(row) for row in autobio_capitulos],
         "estrategia_entrevista": dict(estrategia) if estrategia else None,
+        "uso_ia": [dict(row) for row in uso_ia],
+        "uso_diario": [dict(row) for row in uso_diario],
     }
 
 
@@ -1043,6 +1068,8 @@ def borrar_datos_usuario(usuario: str):
         conn.execute("DELETE FROM autobiografia_capitulos WHERE usuario = ?", (usuario,))
         conn.execute("DELETE FROM autobiografia_proyectos WHERE usuario = ?", (usuario,))
         conn.execute("DELETE FROM estrategia_entrevista WHERE usuario = ?", (usuario,))
+        conn.execute("DELETE FROM uso_ia WHERE usuario = ?", (usuario,))
+        conn.execute("DELETE FROM uso_diario WHERE usuario = ?", (usuario,))
 
 
 def restaurar_datos_usuario(usuario: str, datos: dict):
@@ -1051,13 +1078,13 @@ def restaurar_datos_usuario(usuario: str, datos: dict):
         for s in datos.get("sesiones") or []:
             conn.execute(
                 "INSERT INTO sesiones (usuario, fecha, mensajes, cerrada, fecha_cierre, tokens_input, "
-                "tokens_output, titulo, titulo_manual, tipo, aportante_nombre, aportante_relacion, modelo) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "tokens_output, titulo, titulo_manual, tipo, aportante_nombre, aportante_relacion, modelo, avisos_uso_indebido) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     usuario, s.get("fecha"), s.get("mensajes"), s.get("cerrada", 0),
                     s.get("fecha_cierre"), s.get("tokens_input", 0), s.get("tokens_output", 0),
                     s.get("titulo"), s.get("titulo_manual", 0),
-                    s.get("tipo", "propia"), s.get("aportante_nombre"), s.get("aportante_relacion"), s.get("modelo"),
+                    s.get("tipo", "propia"), s.get("aportante_nombre"), s.get("aportante_relacion"), s.get("modelo"), s.get("avisos_uso_indebido", 0),
                 ),
             )
         m = datos.get("memoria")
@@ -1084,6 +1111,12 @@ def restaurar_datos_usuario(usuario: str, datos: dict):
         if estrategia:
             conn.execute("INSERT INTO estrategia_entrevista (usuario,estado_json,fecha_actualizada) VALUES (?,?,?)",
                          (usuario, estrategia.get("estado_json", "{}"), estrategia.get("fecha_actualizada", datetime.utcnow().isoformat())))
+        for uso in datos.get("uso_ia") or []:
+            conn.execute("INSERT INTO uso_ia (usuario,fecha,operacion,modelo,tokens_input,tokens_output,coste_usd,referencia) VALUES (?,?,?,?,?,?,?,?)",
+                         (usuario, uso.get("fecha"), uso.get("operacion", "desconocida"), uso.get("modelo", MODEL_LEGACY), uso.get("tokens_input", 0), uso.get("tokens_output", 0), uso.get("coste_usd", 0), uso.get("referencia")))
+        for uso in datos.get("uso_diario") or []:
+            conn.execute("INSERT INTO uso_diario (usuario,fecha,mensajes,tokens_input,tokens_output) VALUES (?,?,?,?,?)",
+                         (usuario, uso.get("fecha"), uso.get("mensajes", 0), uso.get("tokens_input", 0), uso.get("tokens_output", 0)))
 
 
 def verificar_password_de(usuario: str, password: str) -> bool:
@@ -1154,7 +1187,7 @@ def enviar_verificacion_email(request: Request, usuario: str, email: str):
     enviar_email(email,"Verifica tu cuenta de Memoricorde",f'<p>Hola,</p><p>Confirma tu dirección de correo para activar tu cuenta:</p><p><a href="{enlace}">Verificar mi correo</a></p><p>El enlace caduca en 24 horas y solo puede utilizarse una vez.</p>')
 
 def enviar_reset_password(request: Request, usuario: str, email: str):
-    token=crear_token_cuenta(usuario,"reset_password",60); enlace=f"{_base_publica(request)}/restablecer.html?token={token}"
+    token=crear_token_cuenta(usuario,"reset_password",60); enlace=f"{_base_publica(request)}/reset.html?token={token}"
     enviar_email(email,"Restablecer tu contraseña de Memoricorde",f'<p>Hola,</p><p>Puedes establecer una nueva contraseña aquí:</p><p><a href="{enlace}">Restablecer contraseña</a></p><p>El enlace caduca en 1 hora y solo puede utilizarse una vez.</p>')
 
 # ---------------------------------------------------------------------------
@@ -1395,7 +1428,7 @@ def enviar_mensaje(request: Request, payload: MensajeIn, usuario: str = Depends(
     respuesta = llamar_a_claude(
         model=obtener_modelo_usuario(usuario, "entrevista"),
         max_tokens=500,
-        system=SYSTEM_PROMPT_ENTREVISTA,
+        system=(SYSTEM_PROMPT_ENTREVISTA + "\n\nEstado de avisos de uso indebido de esta sesión: " + str(obtener_avisos_uso_indebido(sesion_id)) + ". El backend lleva el contador; no intentes deducirlo del historial."),
         messages=mensajes,
         timeout=45.0,  # una respuesta de entrevista debe ser rápida; si tarda más, algo va mal
     )
@@ -1407,6 +1440,13 @@ def enviar_mensaje(request: Request, payload: MensajeIn, usuario: str = Depends(
     sumar_tokens(sesion_id, respuesta.usage.input_tokens, respuesta.usage.output_tokens)
     registrar_uso_diario(usuario, respuesta.usage.input_tokens, respuesta.usage.output_tokens)
     registrar_consumo_ia(usuario, "entrevista", obtener_modelo_usuario(usuario, "entrevista"), respuesta, sesion_id)
+
+    if texto.startswith(MARCADOR_AVISO_USO_INDEBIDO):
+        texto = texto[len(MARCADOR_AVISO_USO_INDEBIDO):].lstrip()
+        with db() as conn:
+            conn.execute("UPDATE sesiones SET avisos_uso_indebido = avisos_uso_indebido + 1 WHERE id = ? AND usuario = ?", (sesion_id, usuario))
+        mensajes[-1]["content"] = texto
+        guardar_mensajes(sesion_id, mensajes)
 
     if texto.startswith(MARCADOR_CIERRE_USO_INDEBIDO):
         texto_visible = texto[len(MARCADOR_CIERRE_USO_INDEBIDO):].strip()
@@ -1507,7 +1547,7 @@ def cerrar_sesion(payload: CerrarSesionIn, usuario: str = Depends(obtener_usuari
 
     guardar_resumen(usuario, nuevo_resumen)
     sumar_tokens(payload.sesion_id, respuesta.usage.input_tokens, respuesta.usage.output_tokens)
-    registrar_uso_diario(usuario, respuesta.usage.input_tokens, respuesta.usage.output_tokens)
+    registrar_uso_diario(usuario, respuesta.usage.input_tokens, respuesta.usage.output_tokens, es_mensaje_conversacion=False)
     marcar_cerrada(payload.sesion_id)
     if titulo_sesion:
         aplicar_titulo_generado(payload.sesion_id, titulo_sesion)
@@ -1728,12 +1768,15 @@ def validar_coherencia_fechas(resumen: dict, usuario: str):
 MARCADOR_CONTEXTO_INTERNO = "Resumen de memoria acumulado hasta ahora"
 MARCADOR_CONTEXTO_APORTACION = "Persona protagonista de este proyecto"
 MARCADOR_CIERRE_USO_INDEBIDO = "[CIERRE_POR_USO_INDEBIDO]"
+MARCADOR_AVISO_USO_INDEBIDO = "[AVISO_USO_INDEBIDO]"
 
 
 def calcular_titulo(mensajes: list) -> str:
     for m in mensajes:
         if m["role"] == "user" and not m["content"].startswith(MARCADOR_CONTEXTO_INTERNO) \
-                and not m["content"].startswith(MARCADOR_CONTEXTO_APORTACION):
+                and not m["content"].startswith(MARCADOR_CONTEXTO_APORTACION) \
+                and not m["content"].startswith(MARCADOR_CIERRE_USO_INDEBIDO) \
+                and not m["content"].startswith(MARCADOR_AVISO_USO_INDEBIDO):
             texto = m["content"].strip()
             return texto[:60] + ("…" if len(texto) > 60 else "")
     return "(sesión sin mensajes todavía)"
@@ -2361,7 +2404,7 @@ def _comprobar_memoria_autobiografia(resumen: dict):
 
 @app.post("/api/autobiografia/previsualizar")
 def previsualizar_autobiografia(payload: AutobiografiaPreviewIn, usuario: str = Depends(obtener_usuario_actual)):
-    comprobar_limite_diario(usuario)
+    comprobar_limite_diario(usuario, comprobar_mensajes=False)
     if payload.tono not in TONOS_AUTOBIOGRAFIA:
         raise HTTPException(status_code=400, detail="Tono no permitido")
     resumen = cargar_resumen(usuario)
@@ -2418,7 +2461,7 @@ def cambiar_tono_autobiografia(payload: AutobiografiaTonoIn, usuario: str = Depe
 
 @app.post("/api/autobiografia/capitulos/{capitulo_id}/generar")
 def generar_capitulo_autobiografia(capitulo_id: int, usuario: str = Depends(obtener_usuario_actual)):
-    comprobar_limite_diario(usuario)
+    comprobar_limite_diario(usuario, comprobar_mensajes=False)
     resumen = cargar_resumen(usuario)
     _comprobar_memoria_autobiografia(resumen)
     with db() as conn:
@@ -2438,7 +2481,7 @@ def generar_capitulo_autobiografia(capitulo_id: int, usuario: str = Depends(obte
     with db() as conn:
         conn.execute("UPDATE autobiografia_capitulos SET contenido=?, estado='generado', modelo=?, tokens_input=tokens_input+?, tokens_output=tokens_output+?, fecha_generado=?, editado_manual=0 WHERE id=? AND usuario=?",
                      (contenido, modelo, respuesta.usage.input_tokens, respuesta.usage.output_tokens, fecha, capitulo_id, usuario))
-    registrar_uso_diario(usuario, respuesta.usage.input_tokens, respuesta.usage.output_tokens)
+    registrar_uso_diario(usuario, respuesta.usage.input_tokens, respuesta.usage.output_tokens, es_mensaje_conversacion=False)
     coste = registrar_consumo_ia(usuario, "autobiografia_capitulo", modelo, respuesta, capitulo_id)
     return {"ok": True, "capitulo_id": capitulo_id, "contenido": contenido, "fecha_generado": fecha, "modelo": modelo, "coste_estimado": round(coste, 6)}
 
@@ -2458,7 +2501,7 @@ def editar_capitulo_autobiografia(capitulo_id: int, payload: EditarCapituloIn, u
 
 @app.post("/api/autobiografia/capitulos/{capitulo_id}/mejorar")
 def mejorar_capitulo_autobiografia(capitulo_id: int, payload: AccionCapituloIn, usuario: str = Depends(obtener_usuario_actual)):
-    comprobar_limite_diario(usuario)
+    comprobar_limite_diario(usuario, comprobar_mensajes=False)
     acciones = {"reescribir": "reescribe el capítulo manteniendo exactamente los hechos", "desarrollar": "desarrolla los pasajes que ya tienen material suficiente, sin añadir hechos", "acortar": "hazlo más conciso sin perder hechos importantes", "literario": "mejora el ritmo y la calidad literaria sin inventar nada", "personal": "haz la voz más personal y cercana sin inventar pensamientos ni hechos"}
     if payload.accion not in acciones: raise HTTPException(status_code=400, detail="Acción no permitida")
     with db() as conn:
@@ -2471,14 +2514,14 @@ def mejorar_capitulo_autobiografia(capitulo_id: int, payload: AccionCapituloIn, 
     fecha=datetime.utcnow().isoformat(); modelo=obtener_modelo_usuario(usuario,"autobiografia")
     with db() as conn:
         conn.execute("UPDATE autobiografia_capitulos SET contenido=?, estado='editado', modelo=?, tokens_input=tokens_input+?, tokens_output=tokens_output+?, fecha_generado=?, editado_manual=1 WHERE id=? AND usuario=?", (contenido,modelo,respuesta.usage.input_tokens,respuesta.usage.output_tokens,fecha,capitulo_id,usuario))
-    registrar_uso_diario(usuario,respuesta.usage.input_tokens,respuesta.usage.output_tokens)
+    registrar_uso_diario(usuario,respuesta.usage.input_tokens,respuesta.usage.output_tokens, es_mensaje_conversacion=False)
     coste = registrar_consumo_ia(usuario, "autobiografia_mejora", modelo, respuesta, capitulo_id)
     return {"contenido":contenido,"fecha_generado":fecha,"modelo":modelo,"coste_estimado":round(coste, 6)}
 
 
 @app.post("/api/autobiografia/generar-completa")
 def generar_autobiografia_completa(usuario: str = Depends(obtener_usuario_actual)):
-    comprobar_limite_diario(usuario)
+    comprobar_limite_diario(usuario, comprobar_mensajes=False)
     with db() as conn:
         proyecto=conn.execute("SELECT tono FROM autobiografia_proyectos WHERE usuario=?",(usuario,)).fetchone()
         capitulos=conn.execute("SELECT orden,titulo,contenido FROM autobiografia_capitulos WHERE usuario=? ORDER BY orden,id",(usuario,)).fetchall()
@@ -2499,7 +2542,7 @@ Reglas:
     respuesta=llamar_a_claude(model=obtener_modelo_usuario(usuario,"autobiografia"),max_tokens=10000,system=system,messages=[{"role":"user","content":f"Tono: {tono}\n\n{material}"}],timeout=180.0)
     contenido=next((b.text for b in respuesta.content if getattr(b,"type",None)=="text"),"").strip(); fecha=datetime.utcnow().isoformat(); modelo=obtener_modelo_usuario(usuario,"autobiografia")
     with db() as conn: conn.execute("INSERT INTO autobiografia (usuario,contenido,fecha_generada,tokens_input,tokens_output,modelo) VALUES (?,?,?,?,?,?) ON CONFLICT(usuario) DO UPDATE SET contenido=excluded.contenido,fecha_generada=excluded.fecha_generada,tokens_input=autobiografia.tokens_input+excluded.tokens_input,tokens_output=autobiografia.tokens_output+excluded.tokens_output,modelo=excluded.modelo",(usuario,contenido,fecha,respuesta.usage.input_tokens,respuesta.usage.output_tokens,modelo))
-    registrar_uso_diario(usuario,respuesta.usage.input_tokens,respuesta.usage.output_tokens)
+    registrar_uso_diario(usuario,respuesta.usage.input_tokens,respuesta.usage.output_tokens, es_mensaje_conversacion=False)
     coste = registrar_consumo_ia(usuario, "autobiografia_completa", modelo, respuesta)
     return {"contenido":contenido,"fecha_generada":fecha,"modelo":modelo,"coste_estimado":round(coste, 6)}
 
@@ -2514,7 +2557,7 @@ def generar_autobiografia(usuario: str = Depends(obtener_usuario_actual)):
     contenido = next((b.text for b in respuesta.content if getattr(b,"type",None)=="text"), "").strip(); fecha=datetime.utcnow().isoformat(); modelo=obtener_modelo_usuario(usuario,"autobiografia")
     with db() as conn:
         conn.execute("INSERT INTO autobiografia (usuario,contenido,fecha_generada,tokens_input,tokens_output,modelo) VALUES (?,?,?,?,?,?) ON CONFLICT(usuario) DO UPDATE SET contenido=excluded.contenido,fecha_generada=excluded.fecha_generada,tokens_input=autobiografia.tokens_input+excluded.tokens_input,tokens_output=autobiografia.tokens_output+excluded.tokens_output,modelo=excluded.modelo", (usuario,contenido,fecha,respuesta.usage.input_tokens,respuesta.usage.output_tokens,modelo))
-    registrar_uso_diario(usuario,respuesta.usage.input_tokens,respuesta.usage.output_tokens)
+    registrar_uso_diario(usuario,respuesta.usage.input_tokens,respuesta.usage.output_tokens, es_mensaje_conversacion=False)
     coste = registrar_consumo_ia(usuario, "autobiografia_completa", modelo, respuesta)
     return {"contenido":contenido,"fecha_generada":fecha,"modelo":modelo,"coste_estimado":round(coste, 6)}
 
@@ -2616,19 +2659,19 @@ original si lo que cuenta es interesante.
 Si en cambio la persona te pide algo que no tiene nada que ver con contar su vida
 (resolver un problema de matemáticas, escribir código, traducir un texto, hacerle
 de asistente general, redactar textos ajenos a su biografía, etc.), sigue esta
-política de tres pasos — cuenta tú misma, revisando tus propios turnos anteriores
-en esta conversación, cuántas veces ya ha ocurrido esto:
+política de tres pasos. El backend te indica el número actual de avisos; no cuentes el historial por tu cuenta:
 
-1ª vez: no lo hagas. Dile con amabilidad que tu papel aquí es acompañarla a contar
+Si el estado indica 0 avisos: no lo hagas. Tu respuesta debe empezar EXACTAMENTE con "[AVISO_USO_INDEBIDO]" y después dile con amabilidad que tu papel aquí es acompañarla a contar
 su historia, no resolver ese tipo de tareas, y retoma la conversación biográfica
 con una pregunta relacionada con lo último que sí contó. Sin dramatizar.
 
-2ª vez en la misma conversación: repite la negativa, pero esta vez dile explícita
-y claramente que es el segundo aviso, y que si vuelve a pedir algo ajeno a la
-entrevista la sesión se cerrará. Sé directa y seria en este punto, sin perder
+Si el estado indica 1 aviso: tu respuesta debe empezar EXACTAMENTE con
+"[AVISO_USO_INDEBIDO]" y después repite la negativa, indicando claramente
+que es el segundo aviso y que si vuelve a pedir algo ajeno a la entrevista
+la sesión se cerrará. Sé directa y seria en este punto, sin perder
 la educación.
 
-3ª vez: no expliques ni negocies más. Tu respuesta debe empezar EXACTAMENTE con
+Si el estado indica 2 o más avisos: no expliques ni negocies más. Tu respuesta debe empezar EXACTAMENTE con
 el texto "[CIERRE_POR_USO_INDEBIDO]" seguido de una frase breve y seria explicando
 que la sesión se cierra por uso indebido repetido, sin nada más después.
 

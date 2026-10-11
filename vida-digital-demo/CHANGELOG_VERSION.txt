@@ -96,3 +96,21 @@ Comprobaciones:
 
 Limitación:
 - No se ejecuta aquí una prueba extremo a extremo de FastAPI porque el entorno no dispone de todas las dependencias de producción.
+
+
+VERSIÓN DE CORRECCIÓN — 2026-10-11
+Base: Memoricorde-Lira-y-FAQ-2026-10-08.zip
+
+Correcciones realizadas:
+- Enlace de recuperación de contraseña corregido a /reset.html.
+- Contador de avisos por uso indebido almacenado en sesiones y comunicado al prompt; marcador de aviso procesado en backend.
+- El contador diario de mensajes solo aumenta en turnos conversacionales; operaciones de resumen/reconstrucción y autobiografía solo suman tokens. Las operaciones de autobiografía no quedan bloqueadas por la cuota de mensajes, aunque siguen sujetas al límite de coste.
+- Exportación, borrado y restauración incluyen uso_ia y uso_diario; las llamadas restauradas reciben nuevos IDs de uso_ia.
+- CSS de FAQ movido fuera del media query móvil.
+- Dependencias fijadas en requirements.txt; verificar con pip freeze antes de actualizar.
+- Cierre de conexión de origen con finally durante la migración a SQLCipher y limpieza del temporal en fallo de lectura.
+- Títulos excluyen marcadores internos de cierre/aviso.
+- Un sesion_id existente de otro usuario ya no crea una sesión nueva; devuelve 403. Un ID inexistente devuelve 404.
+
+Archivos modificados: main.py, static/app.html, requirements.txt, CHANGELOG_VERSION.txt.
+Comprobaciones previstas: sintaxis Python/JavaScript, búsqueda de referencias de reset y revisión de los cambios. No se incluye base de datos.
