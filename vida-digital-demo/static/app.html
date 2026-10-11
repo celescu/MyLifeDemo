@@ -247,6 +247,15 @@
   input[type="password"], input[type="file"] { font-family:system-ui,sans-serif; font-size:.8rem; }
   input[type="password"] { max-width:280px; padding:9px 10px; border:1px solid var(--linea); background:transparent; color:var(--tinta); }
 
+  .faq-lista { max-width:760px; margin:0 auto; }
+  .faq-lista details { border-top:1px solid var(--linea); padding:0; }
+  .faq-lista details:last-child { border-bottom:1px solid var(--linea); }
+  .faq-lista summary { cursor:pointer; list-style:none; padding:16px 4px; font-size:1rem; font-weight:600; }
+  .faq-lista summary::-webkit-details-marker { display:none; }
+  .faq-lista summary:after { content:'+'; float:right; font-family:system-ui,sans-serif; font-weight:400; color:var(--sello); }
+  .faq-lista details[open] summary:after { content:'−'; }
+  .faq-lista details p { margin:0 4px 18px; color:var(--tinta-suave); line-height:1.7; }
+
   .pie-privacidad { max-width:760px; margin:42px auto 0; padding-top:16px; border-top:1px solid var(--linea); font-family:system-ui,sans-serif; font-size:.7rem; color:var(--tinta-suave); }
   .pie-privacidad a { color:inherit; }
 
@@ -257,15 +266,6 @@
     .barra-superior { min-height:68px; align-items:flex-start; padding-top:13px; flex-direction:column; gap:7px; }
     .navegacion { width:100%; overflow-x:auto; flex-wrap:nowrap; padding-bottom:7px; }
     .nav-boton,.nav-enlace { white-space:nowrap; padding:6px 8px; }
-    .faq-lista { max-width:760px; margin:0 auto; }
-  .faq-lista details { border-top:1px solid var(--linea); padding:0; }
-  .faq-lista details:last-child { border-bottom:1px solid var(--linea); }
-  .faq-lista summary { cursor:pointer; list-style:none; padding:16px 4px; font-size:1rem; font-weight:600; }
-  .faq-lista summary::-webkit-details-marker { display:none; }
-  .faq-lista summary:after { content:'+'; float:right; font-family:system-ui,sans-serif; font-weight:400; color:var(--sello); }
-  .faq-lista details[open] summary:after { content:'−'; }
-  .faq-lista details p { margin:0 4px 18px; color:var(--tinta-suave); line-height:1.7; }
-
   .contenido { padding-top:30px; }
     .entrevista-meta { align-items:flex-start; flex-direction:column; gap:2px; }
     .acciones-principales { align-items:stretch; flex-direction:column; }
