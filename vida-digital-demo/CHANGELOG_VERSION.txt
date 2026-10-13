@@ -114,3 +114,17 @@ Correcciones realizadas:
 
 Archivos modificados: main.py, static/app.html, requirements.txt, CHANGELOG_VERSION.txt.
 Comprobaciones previstas: sintaxis Python/JavaScript, búsqueda de referencias de reset y revisión de los cambios. No se incluye base de datos.
+
+
+VERSIÓN DE CORRECCIÓN — 2026-10-13
+Base: ZIP aportado por el usuario (MyLifeDemo-main (8).zip).
+
+Corrección de memoria acumulativa:
+- Los bloques temáticos ya no se sustituyen por completo cuando la IA devuelve un texto no vacío.
+- Se conserva el texto nuevo y se reincorporan fragmentos previos que no aparecen representados, evitando duplicados exactos y casi exactos.
+- Se mantiene la prioridad de los campos editados manualmente existente en el código.
+- No se han cambiado la base de datos, las métricas, los endpoints ni la interfaz.
+
+Limitación conocida:
+- La fusión de texto no puede resolver contradicciones semánticas de forma fiable; si una sesión corrige explícitamente un dato anterior, la revisión debe ser específica. La corrección prioriza evitar pérdidas silenciosas.
+- Los bloques temáticos marcados como editados manualmente también pueden recibir información nueva, conservando el texto manual previo.

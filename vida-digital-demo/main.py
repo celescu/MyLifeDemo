@@ -782,6 +782,62 @@ def _aplicar_path_manual(obj: dict, path: str, valor):
         actual = actual[parte]
     if isinstance(actual, dict): actual[partes[-1]] = valor
 
+def _normalizar_texto_memoria(texto: str) -> str:
+    """Normaliza texto para comparar fragmentos sin depender de mayúsculas o espacios."""
+    return re.sub(r"\s+", " ", (texto or "")).strip().casefold()
+
+
+def _fragmentos_bloque_memoria(texto: str) -> list[str]:
+    """Divide un bloque narrativo en frases conservando cada frase completa."""
+    texto = (texto or "").strip()
+    if not texto:
+        return []
+    return [parte.strip() for parte in re.split(r"(?<=[.!?])\s+|\n+", texto) if parte.strip()]
+
+
+def _fusionar_bloque_textual(valor_previo, valor_nuevo) -> str:
+    """Conserva los fragmentos previos que falten en el bloque recién generado.
+
+    El modelo puede reescribir un bloque y omitir datos antiguos aunque el texto
+    nuevo no esté vacío. Se conserva la redacción nueva y se reincorporan al final
+    las frases previas que no estén ya representadas literalmente o casi literalmente.
+    La comparación conservadora prioriza no perder hechos; no intenta resolver
+    contradicciones biográficas automáticamente.
+    """
+    previo = str(valor_previo or "").strip()
+    nuevo = str(valor_nuevo or "").strip()
+    if not previo:
+        return nuevo
+    if not nuevo:
+        return previo
+
+    fragmentos_nuevos = _fragmentos_bloque_memoria(nuevo)
+    normalizados_nuevos = [_normalizar_texto_memoria(x) for x in fragmentos_nuevos]
+    faltantes = []
+    for fragmento in _fragmentos_bloque_memoria(previo):
+        normalizado = _normalizar_texto_memoria(fragmento)
+        if not normalizado:
+            continue
+        if any(
+            normalizado == existente
+            or SequenceMatcher(None, normalizado, existente).ratio() >= 0.92
+            for existente in normalizados_nuevos
+        ):
+            continue
+        # Evitar duplicados también entre los fragmentos antiguos que añadimos.
+        if any(
+            normalizado == _normalizar_texto_memoria(x)
+            or SequenceMatcher(None, normalizado, _normalizar_texto_memoria(x)).ratio() >= 0.92
+            for x in faltantes
+        ):
+            continue
+        faltantes.append(fragmento)
+
+    if not faltantes:
+        return nuevo
+    return nuevo.rstrip() + "\n\n" + " ".join(faltantes)
+
+
 def _fusionar_memoria_acumulativa(resumen_previo: dict, nuevo: dict) -> dict:
     """Fusiona una nueva extracción con la memoria existente sin perder historia.
 
@@ -801,12 +857,15 @@ def _fusionar_memoria_acumulativa(resumen_previo: dict, nuevo: dict) -> dict:
     # La lista de temas pendientes sí pertenece al estado actual de la entrevista.
     # No la acumulamos ciegamente porque la nueva sesión puede haber resuelto temas.
 
-    # Bloques temáticos: un bloque vacío en la extracción nueva no borra el anterior.
+    # Bloques temáticos acumulativos: una respuesta no vacía también puede
+    # omitir datos previos. Fusionamos el texto nuevo con los fragmentos antiguos
+    # que no estén ya representados, en vez de sustituir todo el bloque.
     bloques_previos = previo.get("bloques", {}) or {}
     bloques_nuevos = nuevo.get("bloques", {}) or {}
     for clave, valor_previo in bloques_previos.items():
-        if clave not in bloques_nuevos or not str(bloques_nuevos.get(clave) or "").strip():
-            bloques_nuevos[clave] = valor_previo
+        bloques_nuevos[clave] = _fusionar_bloque_textual(
+            valor_previo, bloques_nuevos.get(clave, "")
+        )
     nuevo["bloques"] = bloques_nuevos
 
     # Cronología acumulativa. Partimos de los eventos nuevos para permitir que la
@@ -848,8 +907,15 @@ def _fusionar_memoria_acumulativa(resumen_previo: dict, nuevo: dict) -> dict:
     cronologia_nueva.sort(key=lambda e: (e.get("anio") is None, e.get("anio") if e.get("anio") is not None else 0))
     nuevo["cronologia"] = cronologia_nueva
 
-    # Los campos y eventos editados manualmente tienen prioridad absoluta.
+    # Los campos editados manualmente tienen prioridad. Para un bloque temático,
+    # preservamos la versión manual pero permitimos añadir fragmentos nuevos que
+    # la IA haya extraído desde entonces; de lo contrario, marcar un bloque como
+    # manual congelaría ese bloque para todas las sesiones futuras.
     for path, valor in previo.get("_manual_fields", {}).items():
+        if path.startswith("bloques."):
+            clave = path.split(".", 1)[1]
+            bloques_destino = nuevo.setdefault("bloques", {})
+            valor = _fusionar_bloque_textual(valor, bloques_destino.get(clave, ""))
         _aplicar_path_manual(nuevo, path, valor)
 
     for manual in previo.get("_manual_cronologia", []):
