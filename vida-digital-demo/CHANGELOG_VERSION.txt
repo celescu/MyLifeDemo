@@ -1,3 +1,42 @@
+MEMORICORDE — REPROCESAMIENTO DE SESIONES Y VISTA LIMPIA — 2026-10-14
+Base: MyLifeDemo-main (8).zip (versión subida por el usuario, 2026-10-11).
+
+Cambios realizados:
+1. Reprocesar recuerdos desde una sesión guardada
+   - Añadida la acción «Reprocesar recuerdos» para sesiones cerradas.
+   - Reanaliza la transcripción guardada sin pedir al usuario que repita la entrevista.
+   - Fusiona los resultados con la memoria actual; no inicia una reconstrucción global.
+   - Registra el consumo con la operación `reprocesar_sesion` y referencia de sesión.
+   - Incluye confirmación previa, estado mientras procesa, mensajes de error y límite de 3 intentos por hora.
+   - No cambia el título de la sesión ni modifica su transcripción.
+
+2. Vista de sesiones guardadas
+   - La transcripción visible muestra solo la conversación entre el usuario y Lira.
+   - Se oculta el mensaje técnico inicial con resumen acumulado, estrategia de entrevista y autopercepción; no se borra de la base de datos.
+   - El cierre normal, la reconstrucción global y el reprocesamiento individual excluyen ese contexto interno de la transcripción que se analiza.
+
+3. Memoria acumulativa
+   - Si una nueva extracción omite frases anteriores de un bloque temático, se reincorporan las frases no representadas de forma literal o casi idéntica.
+   - Los bloques editados manualmente mantienen su texto y pueden incorporar hechos nuevos sin quedar congelados para siempre.
+   - La fusión prioriza no perder información y no resuelve contradicciones semánticas automáticamente.
+
+Archivos modificados:
+- main.py
+- static/app.html
+- CHANGELOG_VERSION.txt
+
+Comprobaciones:
+- Se ejecutan comprobaciones de sintaxis Python y JavaScript.
+- Se prueban de forma aislada la fusión acumulativa, la conservación de campos manuales y el filtro del contexto interno.
+- No se incluye ni modifica ninguna base de datos de producción.
+
+Limitaciones:
+- El coste de reprocesar depende del tamaño de la sesión y del modelo asignado al usuario.
+- La fusión textual evita pérdidas por omisión, pero los datos contradictorios deben revisarse; no se corrigen automáticamente.
+- La prueba extremo a extremo con Anthropic y la base de datos de Railway requiere probar la versión en un entorno de pruebas antes de desplegarla.
+
+---
+
 MEMORICORDE — VERSIÓN MÉTRICAS CONSOLIDADAS — 2026-10-04
 
 Versión de partida:
@@ -114,17 +153,3 @@ Correcciones realizadas:
 
 Archivos modificados: main.py, static/app.html, requirements.txt, CHANGELOG_VERSION.txt.
 Comprobaciones previstas: sintaxis Python/JavaScript, búsqueda de referencias de reset y revisión de los cambios. No se incluye base de datos.
-
-
-VERSIÓN DE CORRECCIÓN — 2026-10-13
-Base: ZIP aportado por el usuario (MyLifeDemo-main (8).zip).
-
-Corrección de memoria acumulativa:
-- Los bloques temáticos ya no se sustituyen por completo cuando la IA devuelve un texto no vacío.
-- Se conserva el texto nuevo y se reincorporan fragmentos previos que no aparecen representados, evitando duplicados exactos y casi exactos.
-- Se mantiene la prioridad de los campos editados manualmente existente en el código.
-- No se han cambiado la base de datos, las métricas, los endpoints ni la interfaz.
-
-Limitación conocida:
-- La fusión de texto no puede resolver contradicciones semánticas de forma fiable; si una sesión corrige explícitamente un dato anterior, la revisión debe ser específica. La corrección prioriza evitar pérdidas silenciosas.
-- Los bloques temáticos marcados como editados manualmente también pueden recibir información nueva, conservando el texto manual previo.

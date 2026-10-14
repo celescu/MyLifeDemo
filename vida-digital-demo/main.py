@@ -197,7 +197,7 @@ def _ejecutar_reconstruccion(job_id,usuario,filas):
                 mensajes=json.loads(fila["mensajes"]); turnos=[m for m in mensajes if m["role"]=="assistant"]
                 if not turnos:
                     omitidas+=1; hechas.add(sid); _guardar_estado_reconstruccion(job_id,omitidas=omitidas,procesadas_ids=json.dumps(sorted(hechas)),mensaje=f"La sesión {sid} no tiene respuesta de la IA; se omite."); continue
-                transcripcion="\n".join(f"{m['role']}: {m['content']}" for m in mensajes if m["role"] in ("user","assistant"))
+                transcripcion=transcripcion_solo_conversacion(mensajes)
                 nuevo,titulo,respuesta=construir_resumen_desde_transcripcion(usuario,resumen_actual,transcripcion,operacion="reconstruccion",referencia=job_id)
                 if nuevo is None: raise RuntimeError("El modelo no devolvió la herramienta de memoria.")
                 resumen_actual=nuevo; registrar_uso_diario(usuario,respuesta.usage.input_tokens,respuesta.usage.output_tokens, es_mensaje_conversacion=False); marcar_cerrada(sid)
@@ -782,6 +782,7 @@ def _aplicar_path_manual(obj: dict, path: str, valor):
         actual = actual[parte]
     if isinstance(actual, dict): actual[partes[-1]] = valor
 
+
 def _normalizar_texto_memoria(texto: str) -> str:
     """Normaliza texto para comparar fragmentos sin depender de mayúsculas o espacios."""
     return re.sub(r"\s+", " ", (texto or "")).strip().casefold()
@@ -796,13 +797,10 @@ def _fragmentos_bloque_memoria(texto: str) -> list[str]:
 
 
 def _fusionar_bloque_textual(valor_previo, valor_nuevo) -> str:
-    """Conserva los fragmentos previos que falten en el bloque recién generado.
+    """Conserva frases previas que falten en el bloque recién generado.
 
-    El modelo puede reescribir un bloque y omitir datos antiguos aunque el texto
-    nuevo no esté vacío. Se conserva la redacción nueva y se reincorporan al final
-    las frases previas que no estén ya representadas literalmente o casi literalmente.
-    La comparación conservadora prioriza no perder hechos; no intenta resolver
-    contradicciones biográficas automáticamente.
+    Prioriza no perder hechos. No intenta resolver automáticamente contradicciones
+    biográficas: estas deben revisarse explícitamente.
     """
     previo = str(valor_previo or "").strip()
     nuevo = str(valor_nuevo or "").strip()
@@ -824,7 +822,6 @@ def _fusionar_bloque_textual(valor_previo, valor_nuevo) -> str:
             for existente in normalizados_nuevos
         ):
             continue
-        # Evitar duplicados también entre los fragmentos antiguos que añadimos.
         if any(
             normalizado == _normalizar_texto_memoria(x)
             or SequenceMatcher(None, normalizado, _normalizar_texto_memoria(x)).ratio() >= 0.92
@@ -857,9 +854,8 @@ def _fusionar_memoria_acumulativa(resumen_previo: dict, nuevo: dict) -> dict:
     # La lista de temas pendientes sí pertenece al estado actual de la entrevista.
     # No la acumulamos ciegamente porque la nueva sesión puede haber resuelto temas.
 
-    # Bloques temáticos acumulativos: una respuesta no vacía también puede
-    # omitir datos previos. Fusionamos el texto nuevo con los fragmentos antiguos
-    # que no estén ya representados, en vez de sustituir todo el bloque.
+    # Bloques temáticos acumulativos: la IA puede omitir detalles antiguos incluso
+    # cuando devuelve un texto no vacío. Conservamos las frases previas que falten.
     bloques_previos = previo.get("bloques", {}) or {}
     bloques_nuevos = nuevo.get("bloques", {}) or {}
     for clave, valor_previo in bloques_previos.items():
@@ -907,10 +903,9 @@ def _fusionar_memoria_acumulativa(resumen_previo: dict, nuevo: dict) -> dict:
     cronologia_nueva.sort(key=lambda e: (e.get("anio") is None, e.get("anio") if e.get("anio") is not None else 0))
     nuevo["cronologia"] = cronologia_nueva
 
-    # Los campos editados manualmente tienen prioridad. Para un bloque temático,
-    # preservamos la versión manual pero permitimos añadir fragmentos nuevos que
-    # la IA haya extraído desde entonces; de lo contrario, marcar un bloque como
-    # manual congelaría ese bloque para todas las sesiones futuras.
+    # Los campos editados manualmente tienen prioridad. En bloques temáticos,
+    # conservamos la redacción manual y permitimos añadir hechos nuevos que la IA
+    # haya extraído, para que marcar un bloque como manual no lo congele para siempre.
     for path, valor in previo.get("_manual_fields", {}).items():
         if path.startswith("bloques."):
             clave = path.split(".", 1)[1]
@@ -1590,9 +1585,7 @@ def cerrar_sesion(payload: CerrarSesionIn, usuario: str = Depends(obtener_usuari
     mensajes = json.loads(row["mensajes"])
     resumen_previo = cargar_resumen(usuario)
 
-    transcripcion = "\n".join(
-        f"{m['role']}: {m['content']}" for m in mensajes if m["role"] in ("user", "assistant")
-    )
+    transcripcion = transcripcion_solo_conversacion(mensajes)
 
     turnos_reales = [m for m in mensajes if m["role"] == "assistant"]
     if not turnos_reales:
@@ -1837,6 +1830,34 @@ MARCADOR_CIERRE_USO_INDEBIDO = "[CIERRE_POR_USO_INDEBIDO]"
 MARCADOR_AVISO_USO_INDEBIDO = "[AVISO_USO_INDEBIDO]"
 
 
+def es_contexto_interno_sesion(mensaje: dict) -> bool:
+    """Identifica el bloque técnico inicial que se añade al contexto de Lira."""
+    if mensaje.get("role") != "user":
+        return False
+    contenido = str(mensaje.get("content") or "").strip()
+    return (
+        contenido.startswith(MARCADOR_CONTEXTO_INTERNO)
+        or contenido.startswith(MARCADOR_CONTEXTO_APORTACION)
+        or (
+            "Resumen de memoria acumulado hasta ahora" in contenido
+            and "Estrategia de entrevista acumulada" in contenido
+        )
+        or (
+            contenido.startswith("Año actual real:")
+            and "Resumen de memoria acumulado hasta ahora" in contenido
+        )
+    )
+
+
+def transcripcion_solo_conversacion(mensajes: list) -> str:
+    """Construye una transcripción sin instrucciones ni contexto interno de Lira."""
+    return "\n".join(
+        f"{m['role']}: {m['content']}"
+        for m in mensajes
+        if m.get("role") in ("user", "assistant") and not es_contexto_interno_sesion(m)
+    )
+
+
 def calcular_titulo(mensajes: list) -> str:
     for m in mensajes:
         if m["role"] == "user" and not m["content"].startswith(MARCADOR_CONTEXTO_INTERNO) \
@@ -1893,6 +1914,64 @@ def renombrar_sesion(sesion_id: int, payload: RenombrarSesionIn, usuario: str = 
     return {"ok": True, "titulo": titulo_limpio}
 
 
+@app.post("/api/sesion/{sesion_id}/reprocesar")
+@limiter.limit("3/hour")
+def reprocesar_sesion(request: Request, sesion_id: int, usuario: str = Depends(obtener_usuario_actual)):
+    """Reanaliza una sesión cerrada y fusiona sus hallazgos con la memoria actual."""
+    with db() as conn:
+        fila = conn.execute(
+            "SELECT id, mensajes, cerrada, tipo FROM sesiones WHERE id = ? AND usuario = ?",
+            (sesion_id, usuario),
+        ).fetchone()
+    if not fila:
+        raise HTTPException(status_code=404, detail="Sesión no encontrada")
+    if fila["tipo"] == "externa":
+        raise HTTPException(status_code=400, detail="Las aportaciones externas se gestionan desde su apartado correspondiente")
+    if not fila["cerrada"]:
+        raise HTTPException(status_code=400, detail="Solo se pueden reprocesar sesiones cerradas")
+
+    mensajes = json.loads(fila["mensajes"])
+    if not any(m.get("role") == "assistant" for m in mensajes):
+        raise HTTPException(status_code=400, detail="Esta sesión no contiene respuestas de Lira")
+    transcripcion = transcripcion_solo_conversacion(mensajes)
+    if not transcripcion.strip():
+        raise HTTPException(status_code=400, detail="No hay conversación que reprocesar")
+
+    resumen_previo = cargar_resumen(usuario)
+    try:
+        nuevo_resumen, _titulo_sesion, respuesta = construir_resumen_desde_transcripcion(
+            usuario,
+            resumen_previo,
+            transcripcion,
+            operacion="reprocesar_sesion",
+            referencia=sesion_id,
+        )
+    except anthropic.APITimeoutError:
+        raise HTTPException(
+            status_code=504,
+            detail="El reprocesamiento ha tardado demasiado. La conversación y los recuerdos actuales se conservan; puedes intentarlo de nuevo.",
+        )
+
+    if nuevo_resumen is None:
+        raise HTTPException(
+            status_code=502,
+            detail="La IA no ha devuelto una actualización válida. No se han modificado los recuerdos; puedes intentarlo de nuevo.",
+        )
+
+    guardar_resumen(usuario, nuevo_resumen)
+    registrar_uso_diario(
+        usuario,
+        respuesta.usage.input_tokens,
+        respuesta.usage.output_tokens,
+        es_mensaje_conversacion=False,
+    )
+    return {
+        "ok": True,
+        "mensaje": "Sesión reprocesada. Los recuerdos se han actualizado conservando la información anterior.",
+        "resumen": nuevo_resumen,
+    }
+
+
 @app.put("/api/sesion/{sesion_id}/mensaje")
 def editar_mensaje_sesion(sesion_id: int, payload: EditarMensajeIn, usuario: str = Depends(obtener_usuario_actual)):
     """Edita una respuesta propia y descarta los turnos posteriores, porque
@@ -1947,7 +2026,7 @@ def ver_sesion(sesion_id: int, usuario: str = Depends(obtener_usuario_actual)):
     mensajes_visibles = [
         {**m, "indice": i}
         for i, m in enumerate(mensajes)
-        if not (m["role"] == "user" and m["content"].startswith(MARCADOR_CONTEXTO_INTERNO))
+        if not es_contexto_interno_sesion(m)
     ]
     return mensajes_visibles
 
