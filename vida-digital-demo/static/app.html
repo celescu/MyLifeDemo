@@ -1137,6 +1137,20 @@ async function refrescarListaSesiones() {
     };
     div.appendChild(btnRenombrar);
 
+    if (s.cerrada) {
+      const btnReprocesar = document.createElement('button');
+      btnReprocesar.textContent = '🔄 Reprocesar recuerdos';
+      btnReprocesar.style.marginLeft = '10px';
+      btnReprocesar.style.fontSize = '0.75rem';
+      btnReprocesar.style.padding = '4px 10px';
+      btnReprocesar.title = 'Volver a analizar esta conversación e incorporar los recuerdos que falten';
+      btnReprocesar.onclick = (e) => {
+        e.stopPropagation();
+        reprocesarSesion(s.id, s.titulo, btnReprocesar);
+      };
+      div.appendChild(btnReprocesar);
+    }
+
     if (!s.cerrada) {
       const btnCerrar = document.createElement('button');
       btnCerrar.textContent = 'Cerrar esta sesión';
@@ -1163,6 +1177,30 @@ async function refrescarListaSesiones() {
 
     contenedor.appendChild(div);
   });
+}
+
+async function reprocesarSesion(id, titulo, btn) {
+  if (!confirm(`¿Reprocesar la sesión "${titulo}"? Lira volverá a analizar la conversación guardada y fusionará la información con los recuerdos actuales. No tendrás que repetir la entrevista. La operación consume IA y puede tener coste; no se borrarán los recuerdos existentes.`)) {
+    return;
+  }
+  const textoOriginal = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = 'Reprocesando…';
+  try {
+    const resp = await apiFetch(`/api/sesion/${id}/reprocesar`, { method: 'POST' });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.detail || 'No se pudo reprocesar la sesión.');
+    if (data.resumen) {
+      const memoria = document.getElementById('memoria');
+      if (memoria && memoria.style.display === 'block') renderizarMemoria(data.resumen);
+    }
+    alert(data.mensaje || 'Sesión reprocesada correctamente.');
+  } catch (e) {
+    alert(e.message || 'Hubo un problema al reprocesar la sesión.');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = textoOriginal;
+  }
 }
 
 async function borrarSesion(id, titulo, btn) {
@@ -1265,7 +1303,17 @@ async function verTranscripcion(id, titulo) {
     cabecera.style.cssText = 'font-family:system-ui,sans-serif;font-size:.72rem;color:var(--tinta-suave);margin-bottom:18px;';
     cabecera.textContent = `— ${titulo} —`;
     el.appendChild(cabecera);
-    mensajes.filter(m => m.role === 'user' || m.role === 'assistant').forEach(m => {
+    mensajes.filter(m => {
+      if (m.role !== 'user' && m.role !== 'assistant') return false;
+      if (m.role !== 'user') return true;
+      const contenido = String(m.content || '').trim();
+      return !(
+        contenido.startsWith('Resumen de memoria acumulado hasta ahora') ||
+        contenido.startsWith('Persona protagonista de este proyecto') ||
+        (contenido.includes('Resumen de memoria acumulado hasta ahora') && contenido.includes('Estrategia de entrevista acumulada')) ||
+        (contenido.startsWith('Año actual real:') && contenido.includes('Resumen de memoria acumulado hasta ahora'))
+      );
+    }).forEach(m => {
       const bloque = document.createElement('div');
       bloque.style.cssText = 'margin-bottom:22px;';
       const etiqueta = document.createElement('div');
