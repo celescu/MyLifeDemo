@@ -1194,7 +1194,30 @@ async function reprocesarSesion(id, titulo, btn) {
       const memoria = document.getElementById('memoria');
       if (memoria && memoria.style.display === 'block') renderizarMemoria(data.resumen);
     }
-    alert(data.mensaje || 'Sesión reprocesada correctamente.');
+    const cambios = Array.isArray(data.cambios) ? data.cambios : [];
+    let informe = data.mensaje || 'Sesión reprocesada.';
+    if (!cambios.length) {
+      informe += '\n\nNo se han detectado cambios en los Recuerdos guardados. Esto significa que el reprocesamiento no ha producido diferencias visibles; no confirma que la conversación no contuviera información nueva.';
+    } else {
+      informe += `\n\nCambios detectados (${cambios.length}):`;
+      cambios.slice(0, 10).forEach(c => {
+        const etiqueta = c.tipo === 'añadido' ? 'añadido' : c.tipo === 'eliminado' ? 'contenido eliminado' : 'modificado';
+        informe += `\n\n• ${c.nombre}: ${etiqueta}.`;
+        if (Array.isArray(c.añadidas) && c.añadidas.length) {
+          informe += `\n${c.añadidas.slice(0, 3).join(' ')}`;
+          if (c.añadidas.length > 3) informe += ` (y ${c.añadidas.length - 3} frases más)`;
+        } else if (c.seccion === 'cronologia' && c.despues && typeof c.despues === 'object') {
+          const e = c.despues;
+          informe += `\n${[e.anio, e.evento, e.momento].filter(Boolean).join(' — ')}`;
+        } else if (c.seccion === 'bloque' && c.tipo === 'modificado') {
+          informe += `\nTexto nuevo: ${(c.despues || '').slice(0, 260)}${(c.despues || '').length > 260 ? '…' : ''}`;
+        } else if (c.seccion === 'dato') {
+          informe += `\nAntes: ${c.antes ?? 'sin dato'}; ahora: ${c.despues ?? 'sin dato'}.`;
+        }
+      });
+      if (cambios.length > 10) informe += `\n\nHay ${cambios.length - 10} cambios más.`;
+    }
+    alert(informe);
   } catch (e) {
     alert(e.message || 'Hubo un problema al reprocesar la sesión.');
   } finally {
