@@ -835,6 +835,79 @@ def _fusionar_bloque_textual(valor_previo, valor_nuevo) -> str:
     return nuevo.rstrip() + "\n\n" + " ".join(faltantes)
 
 
+def _comparar_resumenes_memoria(anterior: dict, actual: dict) -> list[dict]:
+    """Describe diferencias reales entre el resumen guardado antes y después."""
+    anterior = _normalizar_resumen(json.loads(json.dumps(anterior or {}, ensure_ascii=False)))
+    actual = _normalizar_resumen(json.loads(json.dumps(actual or {}, ensure_ascii=False)))
+    nombres = {
+        "infancia": "Infancia", "familia": "Familia", "lugares": "Lugares",
+        "estudios": "Estudios", "trabajo": "Trabajo", "relaciones": "Relaciones",
+        "momentos_de_cambio": "Momentos de cambio", "valores": "Valores",
+        "aficiones": "Aficiones", "otros": "Otros",
+    }
+    cambios = []
+
+    def frases(texto):
+        return _fragmentos_bloque_memoria(str(texto or ""))
+
+    def equivalentes(frase, lista):
+        normalizada = _normalizar_texto_memoria(frase)
+        return any(
+            normalizada == _normalizar_texto_memoria(x)
+            or SequenceMatcher(None, normalizada, _normalizar_texto_memoria(x)).ratio() >= 0.92
+            for x in lista
+        )
+
+    bloques_antes = anterior.get("bloques", {}) or {}
+    bloques_despues = actual.get("bloques", {}) or {}
+    for clave in dict.fromkeys([*bloques_antes.keys(), *bloques_despues.keys()]):
+        antes = str(bloques_antes.get(clave) or "").strip()
+        despues = str(bloques_despues.get(clave) or "").strip()
+        if antes == despues:
+            continue
+        frases_antes, frases_despues = frases(antes), frases(despues)
+        añadidas = [x for x in frases_despues if not equivalentes(x, frases_antes)]
+        if not antes and despues:
+            tipo = "añadido"
+        elif antes and not despues:
+            tipo = "eliminado"
+        else:
+            tipo = "modificado"
+        cambios.append({
+            "seccion": "bloque", "clave": clave,
+            "nombre": nombres.get(clave, clave.replace("_", " ").capitalize()),
+            "tipo": tipo, "antes": antes, "despues": despues,
+            "añadidas": añadidas,
+        })
+
+    nacimiento_antes = anterior.get("anio_nacimiento")
+    nacimiento_despues = actual.get("anio_nacimiento")
+    if nacimiento_antes != nacimiento_despues:
+        cambios.append({"seccion": "dato", "nombre": "Año de nacimiento", "tipo": "añadido" if nacimiento_antes is None else "modificado", "antes": nacimiento_antes, "despues": nacimiento_despues})
+
+    eventos_antes = anterior.get("cronologia", []) or []
+    eventos_despues = actual.get("cronologia", []) or []
+    usados = set()
+    for evento in eventos_despues:
+        eid = evento.get("_id")
+        previo = next((e for e in eventos_antes if eid and e.get("_id") == eid), None)
+        if previo is None:
+            firma = f"{evento.get('evento','')}|{evento.get('momento','')}".strip().casefold()
+            candidatos = [(SequenceMatcher(None, firma, f"{e.get('evento','')}|{e.get('momento','')}".strip().casefold()).ratio(), e) for e in eventos_antes if id(e) not in usados]
+            ratio, candidato = max(candidatos, default=(0, None), key=lambda x: x[0])
+            if ratio >= 0.80:
+                previo = candidato
+        if previo is None:
+            cambios.append({"seccion": "cronologia", "nombre": "Cronología", "tipo": "añadido", "despues": evento})
+            continue
+        usados.add(id(previo))
+        campos = [campo for campo in ("anio", "evento", "momento") if previo.get(campo) != evento.get(campo)]
+        if campos:
+            cambios.append({"seccion": "cronologia", "nombre": "Cronología", "tipo": "modificado", "antes": previo, "despues": evento})
+
+    return cambios
+
+
 def _fusionar_memoria_acumulativa(resumen_previo: dict, nuevo: dict) -> dict:
     """Fusiona una nueva extracción con la memoria existente sin perder historia.
 
@@ -1958,6 +2031,7 @@ def reprocesar_sesion(request: Request, sesion_id: int, usuario: str = Depends(o
             detail="La IA no ha devuelto una actualización válida. No se han modificado los recuerdos; puedes intentarlo de nuevo.",
         )
 
+    cambios = _comparar_resumenes_memoria(resumen_previo, nuevo_resumen)
     guardar_resumen(usuario, nuevo_resumen)
     registrar_uso_diario(
         usuario,
@@ -1967,8 +2041,9 @@ def reprocesar_sesion(request: Request, sesion_id: int, usuario: str = Depends(o
     )
     return {
         "ok": True,
-        "mensaje": "Sesión reprocesada. Los recuerdos se han actualizado conservando la información anterior.",
+        "mensaje": "Sesión reprocesada.",
         "resumen": nuevo_resumen,
+        "cambios": cambios,
     }
 
 

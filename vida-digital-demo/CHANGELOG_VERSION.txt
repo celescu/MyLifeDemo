@@ -1,3 +1,30 @@
+MEMORICORDE — INFORME DE CAMBIOS AL REPROCESAR SESIONES — 2026-10-14
+Base: Memoricorde-reprocesar-sesiones-vista-limpia-2026-10-14.zip.
+
+Cambios realizados:
+1. Tras reprocesar una sesión, la aplicación compara el resumen anterior con el resultado guardado y muestra un informe de diferencias reales.
+2. El informe identifica bloques temáticos añadidos, modificados o vaciados, y señala las frases nuevas cuando puede distinguirlas; también informa de cambios en año de nacimiento y cronología.
+3. Si no hay diferencias detectadas, se indica expresamente que no se han detectado cambios, sin afirmar que se haya añadido información.
+4. Se conserva el comportamiento previo de reprocesamiento y la vista limpia de las transcripciones.
+
+Archivos modificados:
+- main.py
+- static/app.html
+- CHANGELOG_VERSION.txt
+
+Comprobaciones:
+- Compilación sintáctica de Python.
+- Comprobación sintáctica de JavaScript.
+- Pruebas aisladas del comparador para texto nuevo, texto sin cambios, dato biográfico y cronología.
+- ZIP verificado con unzip -t.
+
+Limitaciones:
+- La comparación detecta diferencias del contenido guardado; no puede asegurar que la IA haya extraído todos los datos mencionados en la sesión.
+- Si la IA reformula una frase sin añadir una frase claramente separable, se muestra el bloque como modificado y un fragmento del texto final.
+- No se incluye ni modifica ninguna base de datos de producción. No se ha desplegado en Railway ni se ha hecho una prueba real con Anthropic.
+
+---
+
 MEMORICORDE — REPROCESAMIENTO DE SESIONES Y VISTA LIMPIA — 2026-10-14
 Base: MyLifeDemo-main (8).zip (versión subida por el usuario, 2026-10-11).
 
