@@ -291,3 +291,26 @@ La variable `MODEL` se mantiene como compatibilidad para las cuentas existentes:
 ## Memoria editable y reconstrucción
 
 La memoria estructurada puede editarse desde «Mis recuerdos». Las correcciones manuales quedan marcadas y se reaplican después de una reconstrucción, de modo que una corrección como un año equivocado no se pierde. La reconstrucción guarda el progreso sesión a sesión y permite cancelarla y reanudarla posteriormente.
+
+
+## Sistema interno de créditos (fase previa a Stripe)
+
+Esta versión incorpora las tablas comerciales y el motor interno de créditos,
+pero todavía NO integra Stripe ni descuenta créditos automáticamente de las
+operaciones de IA. La aplicación conserva el comportamiento funcional actual
+hasta completar la integración y las pruebas de consumo en una fase posterior.
+
+- Las cuentas que ya existían al ejecutar la migración se clasifican como `legacy`.
+- Los nuevos registros y las cuentas creadas desde administración se clasifican como `free`.
+- Se mantienen bolsas independientes de créditos mensuales y adicionales.
+- Hay funciones transaccionales para conceder, reservar, liquidar y liberar créditos.
+- Se exponen `/api/creditos` y `/api/creditos/movimientos` para la cuenta autenticada.
+- El administrador puede consultar usuarios comerciales, asignar créditos y cambiar planes.
+- Los valores de cuota están a cero por defecto hasta decidir precios y cantidades.
+
+Variables nuevas: `CREDITOS_GRATUITOS_MENSUALES`, `CREDITOS_PREMIUM_MENSUALES`,
+`CREDITOS_FACTOR_COSTE` y `CREDITOS_USD_POR_UNIDAD`.
+
+Antes de desplegar, realiza un backup de la base de datos. La migración añade
+tablas y clasifica las cuentas existentes como `legacy`; no modifica recuerdos,
+sesiones, autobiografías ni registros históricos de `uso_ia`.

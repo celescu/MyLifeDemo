@@ -180,3 +180,16 @@ Correcciones realizadas:
 
 Archivos modificados: main.py, static/app.html, requirements.txt, CHANGELOG_VERSION.txt.
 Comprobaciones previstas: sintaxis Python/JavaScript, búsqueda de referencias de reset y revisión de los cambios. No se incluye base de datos.
+
+
+## Sistema comercial interno de créditos — fase previa a Stripe (2026-11-02)
+
+- Añadidas tablas `planes`, `cuentas_comerciales`, `suscripciones`, `pagos`, `movimientos_creditos`, `reservas_creditos` y `eventos_pago`.
+- Las cuentas existentes se clasifican como `legacy`; los nuevos registros y altas administrativas como `free`.
+- El registro público deja de aceptar la elección de modelos y asigna el modelo estándar en el servidor.
+- Implementadas funciones transaccionales de concesión, renovación mensual, reserva, liquidación y liberación de créditos.
+- Añadida conversión configurable de coste USD a créditos.
+- Añadidos endpoints autenticados de consulta de saldo e historial y endpoints administrativos de consulta, ajuste y cambio de plan.
+- Añadida una vista de plan y saldo dentro de Cuenta.
+- No se integra Stripe ni se descuenta todavía crédito de las operaciones de IA; la aplicación conserva el funcionamiento actual hasta la siguiente fase.
+- Cuotas iniciales configuradas a cero para no inventar cantidades comerciales.

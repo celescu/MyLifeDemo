@@ -22,10 +22,11 @@ import threading
 import traceback
 import hashlib
 import re
+import math
 from urllib.request import Request as UrlRequest, urlopen
 from difflib import SequenceMatcher
 import bcrypt
-from datetime import datetime
+from datetime import datetime, timedelta
 from contextlib import contextmanager, asynccontextmanager
 
 from dotenv import load_dotenv
@@ -78,6 +79,13 @@ PRECIO_OUTPUT_POR_MILLON = PRECIOS_MODELO.get(MODEL_LEGACY, (3.0, 15.0))[1]
 LIMITE_MENSAJES_DIARIOS = int(os.environ.get("LIMITE_MENSAJES_DIARIOS", "60"))
 LIMITE_COSTE_DIARIO_USD = float(os.environ.get("LIMITE_COSTE_DIARIO_USD", "1.0"))
 LIMITE_TURNOS_POR_SESION = int(os.environ.get("LIMITE_TURNOS_POR_SESION", "50"))
+
+# Sistema comercial interno. Las cuotas quedan a cero hasta definir precios y
+# límites comerciales; así la nueva capa no concede créditos arbitrarios.
+CREDITOS_GRATUITOS_MENSUALES = max(0, int(os.environ.get("CREDITOS_GRATUITOS_MENSUALES", "0")))
+CREDITOS_PREMIUM_MENSUALES = max(0, int(os.environ.get("CREDITOS_PREMIUM_MENSUALES", "0")))
+CREDITOS_FACTOR_COSTE = max(0.0, float(os.environ.get("CREDITOS_FACTOR_COSTE", "1.0")))
+CREDITOS_USD_POR_UNIDAD = max(0.000001, float(os.environ.get("CREDITOS_USD_POR_UNIDAD", "0.01")))
 
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD")
 ADMIN_USERNAME = os.environ.get("ADMIN_USERNAME", "yo")
@@ -434,6 +442,148 @@ def init_db_sobre(conn):
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_uso_ia_usuario_fecha ON uso_ia(usuario, fecha)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_uso_ia_referencia ON uso_ia(usuario, referencia)")
+    # ------------------------------------------------------------------
+    # Capa comercial independiente de uso_ia (coste real de Anthropic).
+    # No contiene datos de tarjetas ni depende todavía de Stripe.
+    # ------------------------------------------------------------------
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS planes (
+            id TEXT PRIMARY KEY,
+            nombre TEXT NOT NULL,
+            activo INTEGER NOT NULL DEFAULT 1,
+            creditos_mensuales INTEGER NOT NULL DEFAULT 0,
+            modelo_entrevista TEXT,
+            modelo_autobiografia TEXT,
+            limite_mensajes_diarios INTEGER,
+            limite_coste_diario_usd REAL,
+            prestaciones_json TEXT NOT NULL DEFAULT '{}',
+            fecha_actualizada TEXT NOT NULL
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS cuentas_comerciales (
+            usuario TEXT PRIMARY KEY,
+            plan_id TEXT NOT NULL DEFAULT 'legacy',
+            estado TEXT NOT NULL DEFAULT 'activo',
+            creditos_mensuales INTEGER NOT NULL DEFAULT 0,
+            creditos_adicionales INTEGER NOT NULL DEFAULT 0,
+            periodo_inicio TEXT,
+            periodo_fin TEXT,
+            creado TEXT NOT NULL,
+            actualizado TEXT NOT NULL
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS suscripciones (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            usuario TEXT NOT NULL,
+            proveedor TEXT NOT NULL DEFAULT 'manual',
+            proveedor_customer_id TEXT,
+            proveedor_subscription_id TEXT,
+            plan_id TEXT NOT NULL,
+            estado TEXT NOT NULL,
+            periodo_inicio TEXT,
+            periodo_fin TEXT,
+            cancelar_periodo_fin INTEGER NOT NULL DEFAULT 0,
+            creada TEXT NOT NULL,
+            actualizada TEXT NOT NULL,
+            UNIQUE(proveedor, proveedor_subscription_id)
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS pagos (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            usuario TEXT NOT NULL,
+            proveedor TEXT NOT NULL DEFAULT 'manual',
+            proveedor_payment_id TEXT,
+            producto TEXT NOT NULL,
+            importe_minor INTEGER NOT NULL DEFAULT 0,
+            moneda TEXT NOT NULL DEFAULT 'eur',
+            estado TEXT NOT NULL DEFAULT 'pendiente',
+            creditos_concedidos INTEGER NOT NULL DEFAULT 0,
+            fecha TEXT NOT NULL,
+            fecha_actualizada TEXT NOT NULL,
+            UNIQUE(proveedor, proveedor_payment_id)
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS movimientos_creditos (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            usuario TEXT NOT NULL,
+            tipo TEXT NOT NULL,
+            bolsa TEXT NOT NULL,
+            cantidad INTEGER NOT NULL,
+            saldo_mensual_despues INTEGER NOT NULL,
+            saldo_adicional_despues INTEGER NOT NULL,
+            referencia TEXT,
+            clave_idempotencia TEXT UNIQUE,
+            descripcion TEXT NOT NULL DEFAULT '',
+            creado TEXT NOT NULL
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS reservas_creditos (
+            id TEXT PRIMARY KEY,
+            usuario TEXT NOT NULL,
+            operacion TEXT NOT NULL,
+            referencia TEXT,
+            clave_idempotencia TEXT NOT NULL UNIQUE,
+            cantidad_reservada INTEGER NOT NULL,
+            mensual_reservado INTEGER NOT NULL DEFAULT 0,
+            adicional_reservado INTEGER NOT NULL DEFAULT 0,
+            cantidad_liquidada INTEGER,
+            deficit INTEGER NOT NULL DEFAULT 0,
+            estado TEXT NOT NULL DEFAULT 'reservado',
+            creado TEXT NOT NULL,
+            actualizado TEXT NOT NULL,
+            expira TEXT
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS eventos_pago (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            proveedor TEXT NOT NULL,
+            evento_id TEXT NOT NULL,
+            tipo_evento TEXT NOT NULL,
+            estado TEXT NOT NULL DEFAULT 'recibido',
+            payload_resumen TEXT NOT NULL DEFAULT '{}',
+            creado TEXT NOT NULL,
+            procesado TEXT,
+            UNIQUE(proveedor, evento_id)
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_movimientos_usuario_fecha ON movimientos_creditos(usuario, creado)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_reservas_usuario_estado ON reservas_creditos(usuario, estado)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_suscripciones_usuario_estado ON suscripciones(usuario, estado)")
+
+    ahora_comercial = datetime.utcnow().isoformat()
+    planes_base = [
+        ('free', 'Gratuito', CREDITOS_GRATUITOS_MENSUALES, MODEL_ESTANDAR, MODEL_ESTANDAR,
+         LIMITE_MENSAJES_DIARIOS, LIMITE_COSTE_DIARIO_USD, '{"premium":false}'),
+        ('premium', 'Premium', CREDITOS_PREMIUM_MENSUALES, MODEL_AVANZADO, MODEL_AVANZADO,
+         None, None, '{"premium":true}'),
+        ('legacy', 'Legado', 0, None, None, None, None, '{"legacy":true}')
+    ]
+    for pid, nombre, cuota, me, ma, lm, lc, prestaciones in planes_base:
+        conn.execute("""INSERT INTO planes
+            (id,nombre,activo,creditos_mensuales,modelo_entrevista,modelo_autobiografia,
+             limite_mensajes_diarios,limite_coste_diario_usd,prestaciones_json,fecha_actualizada)
+            VALUES (?,?,1,?,?,?,?,?,?,?)
+            ON CONFLICT(id) DO UPDATE SET nombre=excluded.nombre,
+              creditos_mensuales=excluded.creditos_mensuales,
+              modelo_entrevista=excluded.modelo_entrevista,
+              modelo_autobiografia=excluded.modelo_autobiografia,
+              limite_mensajes_diarios=excluded.limite_mensajes_diarios,
+              limite_coste_diario_usd=excluded.limite_coste_diario_usd,
+              prestaciones_json=excluded.prestaciones_json,
+              fecha_actualizada=excluded.fecha_actualizada""",
+            (pid,nombre,cuota,me,ma,lm,lc,prestaciones,ahora_comercial))
+
+    # Toda cuenta que ya existía antes de implantar esta capa pasa a LEGACY.
+    # Las cuentas nuevas se insertan explícitamente como FREE en su endpoint.
+    conn.execute("""INSERT OR IGNORE INTO cuentas_comerciales
+        (usuario,plan_id,estado,creditos_mensuales,creditos_adicionales,creado,actualizado)
+        SELECT usuario,'legacy','activo',0,0,?,? FROM usuarios""", (ahora_comercial,ahora_comercial))
     columnas_existentes = {fila[1] for fila in conn.execute("PRAGMA table_info(sesiones)").fetchall()}
     for columna, definicion in [
         ("fecha_cierre", "TEXT"),
@@ -756,6 +906,184 @@ def coste_uso_ia(usuario: str, operacion: str | None = None, referencia: str | i
             params,
         ).fetchone()
     return float(row["coste"] or 0)
+
+
+# ---------------------------------------------------------------------------
+# Motor interno de créditos (sin dependencia de Stripe)
+# ---------------------------------------------------------------------------
+
+def _saldo_creditos_conn(conn, usuario: str) -> dict:
+    row=conn.execute("SELECT plan_id,estado,creditos_mensuales,creditos_adicionales,periodo_inicio,periodo_fin FROM cuentas_comerciales WHERE usuario=?",(usuario,)).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="No existe la cuenta comercial del usuario")
+    return {"plan":row["plan_id"],"estado":row["estado"],"mensuales":int(row["creditos_mensuales"] or 0),"adicionales":int(row["creditos_adicionales"] or 0),"total":int(row["creditos_mensuales"] or 0)+int(row["creditos_adicionales"] or 0),"periodo_inicio":row["periodo_inicio"],"periodo_fin":row["periodo_fin"]}
+
+def obtener_saldo_creditos(usuario: str) -> dict:
+    with db() as conn: return _saldo_creditos_conn(conn,usuario)
+
+def _registrar_movimiento_conn(conn, usuario: str, tipo: str, bolsa: str, cantidad: int,
+                               referencia=None, clave_idempotencia=None, descripcion=""):
+    saldo=_saldo_creditos_conn(conn,usuario)
+    conn.execute("""INSERT INTO movimientos_creditos
+        (usuario,tipo,bolsa,cantidad,saldo_mensual_despues,saldo_adicional_despues,referencia,clave_idempotencia,descripcion,creado)
+        VALUES (?,?,?,?,?,?,?,?,?,?)""",
+        (usuario,tipo,bolsa,int(cantidad),saldo["mensuales"],saldo["adicionales"],
+         str(referencia) if referencia is not None else None,clave_idempotencia,descripcion,datetime.utcnow().isoformat()))
+
+def conceder_creditos(usuario: str, cantidad: int, bolsa: str="adicionales", tipo: str="ajuste",
+                       referencia=None, clave_idempotencia=None, descripcion="") -> dict:
+    """Concede créditos en una transacción. La clave idempotente evita duplicados."""
+    cantidad=int(cantidad)
+    if cantidad<=0: raise ValueError("La cantidad debe ser positiva")
+    if bolsa not in {"mensuales","adicionales"}: raise ValueError("Bolsa de créditos no válida")
+    with db() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        if clave_idempotencia and conn.execute("SELECT 1 FROM movimientos_creditos WHERE clave_idempotencia=?",(clave_idempotencia,)).fetchone():
+            return _saldo_creditos_conn(conn,usuario)
+        columna="creditos_mensuales" if bolsa=="mensuales" else "creditos_adicionales"
+        conn.execute(f"UPDATE cuentas_comerciales SET {columna}={columna}+?,actualizado=? WHERE usuario=?",(cantidad,datetime.utcnow().isoformat(),usuario))
+        if conn.execute("SELECT changes()").fetchone()[0] != 1: raise HTTPException(status_code=404,detail="Cuenta comercial inexistente")
+        _registrar_movimiento_conn(conn,usuario,tipo,bolsa,cantidad,referencia,clave_idempotencia,descripcion)
+        return _saldo_creditos_conn(conn,usuario)
+
+def reservar_creditos(usuario: str, operacion: str, cantidad: int, referencia=None,
+                      clave_idempotencia: str | None=None, minutos_expiracion: int=120) -> str:
+    """Reserva saldo mensual primero y adicional después. No permite saldo negativo."""
+    cantidad=int(cantidad)
+    if cantidad<=0: raise ValueError("La reserva debe ser positiva")
+    clave=clave_idempotencia or secrets.token_urlsafe(24)
+    with db() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        existente=conn.execute("SELECT id,usuario,estado FROM reservas_creditos WHERE clave_idempotencia=?",(clave,)).fetchone()
+        if existente:
+            if existente["usuario"]!=usuario: raise HTTPException(status_code=409,detail="Clave de idempotencia ya utilizada")
+            if existente["estado"]=="reservado": return existente["id"]
+            raise HTTPException(status_code=409,detail="La operación ya fue procesada")
+        incidencia=conn.execute("SELECT 1 FROM reservas_creditos WHERE usuario=? AND estado='incidencia' AND deficit>0 LIMIT 1",(usuario,)).fetchone()
+        if incidencia: raise HTTPException(status_code=409,detail="Tu cuenta tiene una incidencia de consumo pendiente de regularización")
+        saldo=_saldo_creditos_conn(conn,usuario)
+        if saldo["total"]<cantidad: raise HTTPException(status_code=402,detail="No tienes créditos suficientes para esta operación")
+        mensual=min(saldo["mensuales"],cantidad); adicional=cantidad-mensual
+        conn.execute("UPDATE cuentas_comerciales SET creditos_mensuales=creditos_mensuales-?,creditos_adicionales=creditos_adicionales-?,actualizado=? WHERE usuario=?",
+                     (mensual,adicional,datetime.utcnow().isoformat(),usuario))
+        rid=secrets.token_urlsafe(18); ahora=datetime.utcnow(); expira=(ahora+timedelta(minutes=max(1,minutos_expiracion))).isoformat()
+        conn.execute("""INSERT INTO reservas_creditos
+            (id,usuario,operacion,referencia,clave_idempotencia,cantidad_reservada,mensual_reservado,adicional_reservado,estado,creado,actualizado,expira)
+            VALUES(?,?,?,?,?,?,?,?, 'reservado',?,?,?)""",
+            (rid,usuario,operacion,str(referencia) if referencia is not None else None,clave,cantidad,mensual,adicional,ahora.isoformat(),ahora.isoformat(),expira))
+        if mensual: _registrar_movimiento_conn(conn,usuario,"reserva","mensuales",-mensual,rid,f"{clave}:reserva:m",f"Reserva para {operacion}")
+        if adicional: _registrar_movimiento_conn(conn,usuario,"reserva","adicionales",-adicional,rid,f"{clave}:reserva:a",f"Reserva para {operacion}")
+        return rid
+
+def liquidar_reserva_creditos(reserva_id: str, coste_real: int) -> dict:
+    """Liquida la reserva; devuelve el sobrante o intenta cubrir un exceso.
+
+    Si el coste real supera la reserva y no hay saldo adicional, registra un
+    déficit y bloquea nuevas reservas hasta que se regularice manualmente.
+    """
+    coste_real=int(coste_real)
+    if coste_real<0: raise ValueError("El coste no puede ser negativo")
+    with db() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        r=conn.execute("SELECT * FROM reservas_creditos WHERE id=?",(reserva_id,)).fetchone()
+        if not r: raise HTTPException(status_code=404,detail="Reserva inexistente")
+        if r["estado"]!="reservado": return _saldo_creditos_conn(conn,r["usuario"])
+        usuario=r["usuario"]; reservado=int(r["cantidad_reservada"]); exceso=max(0,coste_real-reservado); sobrante=max(0,reservado-coste_real)
+        deficit=0
+        if exceso:
+            saldo=_saldo_creditos_conn(conn,usuario)
+            mensual=min(saldo["mensuales"],exceso); adicional=min(saldo["adicionales"],exceso-mensual); deficit=exceso-mensual-adicional
+            conn.execute("UPDATE cuentas_comerciales SET creditos_mensuales=creditos_mensuales-?,creditos_adicionales=creditos_adicionales-?,actualizado=? WHERE usuario=?",(mensual,adicional,datetime.utcnow().isoformat(),usuario))
+            if mensual: _registrar_movimiento_conn(conn,usuario,"consumo_ajuste","mensuales",-mensual,reserva_id,f"{r['clave_idempotencia']}:exceso:m","Exceso de consumo sobre reserva")
+            if adicional: _registrar_movimiento_conn(conn,usuario,"consumo_ajuste","adicionales",-adicional,reserva_id,f"{r['clave_idempotencia']}:exceso:a","Exceso de consumo sobre reserva")
+        if sobrante:
+            # Se consumen primero los mensuales; por tanto, el sobrante se
+            # devuelve primero a la bolsa adicional (la última utilizada).
+            devolver_a=min(int(r["adicional_reservado"]),sobrante); devolver_m=sobrante-devolver_a
+            conn.execute("UPDATE cuentas_comerciales SET creditos_mensuales=creditos_mensuales+?,creditos_adicionales=creditos_adicionales+?,actualizado=? WHERE usuario=?",(devolver_m,devolver_a,datetime.utcnow().isoformat(),usuario))
+            if devolver_m: _registrar_movimiento_conn(conn,usuario,"liberacion","mensuales",devolver_m,reserva_id,f"{r['clave_idempotencia']}:libera:m","Créditos no utilizados")
+            if devolver_a: _registrar_movimiento_conn(conn,usuario,"liberacion","adicionales",devolver_a,reserva_id,f"{r['clave_idempotencia']}:libera:a","Créditos no utilizados")
+        estado="incidencia" if deficit else "liquidado"
+        conn.execute("UPDATE reservas_creditos SET cantidad_liquidada=?,deficit=?,estado=?,actualizado=? WHERE id=?",(coste_real,deficit,estado,datetime.utcnow().isoformat(),reserva_id))
+        return _saldo_creditos_conn(conn,usuario)
+
+def liberar_reserva_creditos(reserva_id: str, motivo: str="Operación no completada") -> dict:
+    with db() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        r=conn.execute("SELECT * FROM reservas_creditos WHERE id=?",(reserva_id,)).fetchone()
+        if not r: raise HTTPException(status_code=404,detail="Reserva inexistente")
+        if r["estado"]!="reservado": return _saldo_creditos_conn(conn,r["usuario"])
+        usuario=r["usuario"]; m=int(r["mensual_reservado"]); a=int(r["adicional_reservado"])
+        conn.execute("UPDATE cuentas_comerciales SET creditos_mensuales=creditos_mensuales+?,creditos_adicionales=creditos_adicionales+?,actualizado=? WHERE usuario=?",(m,a,datetime.utcnow().isoformat(),usuario))
+        if m: _registrar_movimiento_conn(conn,usuario,"liberacion","mensuales",m,reserva_id,f"{r['clave_idempotencia']}:libera:m",motivo)
+        if a: _registrar_movimiento_conn(conn,usuario,"liberacion","adicionales",a,reserva_id,f"{r['clave_idempotencia']}:libera:a",motivo)
+        conn.execute("UPDATE reservas_creditos SET estado='liberado',cantidad_liquidada=0,actualizado=? WHERE id=?",(datetime.utcnow().isoformat(),reserva_id))
+        return _saldo_creditos_conn(conn,usuario)
+
+def renovar_creditos_mensuales(usuario: str, periodo_inicio: str, periodo_fin: str,
+                               clave_idempotencia: str | None=None) -> dict:
+    """Renueva la bolsa mensual. La clave del periodo evita dobles abonos.
+
+    Se invocará desde la renovación de Stripe en la siguiente fase; por ahora
+    también permite probar manualmente el ciclo de créditos sin pagos reales.
+    """
+    clave=clave_idempotencia or f"renovacion:{usuario}:{periodo_inicio}"
+    with db() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        if conn.execute("SELECT 1 FROM movimientos_creditos WHERE clave_idempotencia=?",(clave,)).fetchone():
+            return _saldo_creditos_conn(conn,usuario)
+        cuenta=conn.execute("SELECT plan_id,creditos_mensuales FROM cuentas_comerciales WHERE usuario=?",(usuario,)).fetchone()
+        if not cuenta: raise HTTPException(status_code=404,detail="Cuenta comercial inexistente")
+        plan=conn.execute("SELECT creditos_mensuales FROM planes WHERE id=?",(cuenta["plan_id"],)).fetchone()
+        nueva_cuota=int(plan["creditos_mensuales"] or 0) if plan else 0
+        saldo_anterior=int(cuenta["creditos_mensuales"] or 0)
+        ahora=datetime.utcnow().isoformat()
+        # Primero caducan los créditos del periodo anterior y se registra
+        # su saldo final real; después se asigna la nueva cuota.
+        conn.execute("UPDATE cuentas_comerciales SET creditos_mensuales=0,periodo_inicio=?,periodo_fin=?,actualizado=? WHERE usuario=?",
+                     (periodo_inicio,periodo_fin,ahora,usuario))
+        if saldo_anterior:
+            _registrar_movimiento_conn(conn,usuario,"caducidad","mensuales",-saldo_anterior,periodo_inicio,f"{clave}:caducidad", "Caducidad de créditos del periodo anterior")
+        conn.execute("UPDATE cuentas_comerciales SET creditos_mensuales=?,actualizado=? WHERE usuario=?",(nueva_cuota,ahora,usuario))
+        if nueva_cuota:
+            _registrar_movimiento_conn(conn,usuario,"renovacion","mensuales",nueva_cuota,periodo_inicio,clave,"Asignación de créditos del nuevo periodo")
+        else:
+            # Registrar también la renovación de cuota cero para conservar
+            # idempotencia y trazabilidad del periodo.
+            _registrar_movimiento_conn(conn,usuario,"renovacion","mensuales",0,periodo_inicio,clave,"Renovación sin créditos incluidos")
+        return _saldo_creditos_conn(conn,usuario)
+
+def regularizar_incidencia_creditos(reserva_id: str) -> dict:
+    """Cobra un déficit pendiente si el usuario ya dispone de saldo suficiente."""
+    with db() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        r=conn.execute("SELECT usuario,deficit,estado,clave_idempotencia FROM reservas_creditos WHERE id=?",(reserva_id,)).fetchone()
+        if not r: raise HTTPException(status_code=404,detail="Reserva inexistente")
+        if r["estado"]!="incidencia" or int(r["deficit"] or 0)<=0:
+            return _saldo_creditos_conn(conn,r["usuario"])
+        usuario=r["usuario"]; deficit=int(r["deficit"]); saldo=_saldo_creditos_conn(conn,usuario)
+        if saldo["total"]<deficit: raise HTTPException(status_code=402,detail="Todavía no hay créditos suficientes para regularizar la incidencia")
+        mensual=min(saldo["mensuales"],deficit); adicional=deficit-mensual
+        conn.execute("UPDATE cuentas_comerciales SET creditos_mensuales=creditos_mensuales-?,creditos_adicionales=creditos_adicionales-?,actualizado=? WHERE usuario=?",(mensual,adicional,datetime.utcnow().isoformat(),usuario))
+        if mensual: _registrar_movimiento_conn(conn,usuario,"regularizacion","mensuales",-mensual,reserva_id,f"{r['clave_idempotencia']}:regulariza:m","Regularización de exceso de consumo")
+        if adicional: _registrar_movimiento_conn(conn,usuario,"regularizacion","adicionales",-adicional,reserva_id,f"{r['clave_idempotencia']}:regulariza:a","Regularización de exceso de consumo")
+        conn.execute("UPDATE reservas_creditos SET deficit=0,estado='liquidado',actualizado=? WHERE id=?",(datetime.utcnow().isoformat(),reserva_id))
+        return _saldo_creditos_conn(conn,usuario)
+
+def coste_creditos_desde_usd(coste_usd: float) -> int:
+    """Convierte coste Anthropic a créditos usando parámetros configurables."""
+    coste=max(0.0,float(coste_usd or 0))*CREDITOS_FACTOR_COSTE
+    return int(math.ceil(coste/CREDITOS_USD_POR_UNIDAD)) if coste else 0
+
+def resumen_comercial_usuario(usuario: str) -> dict:
+    with db() as conn:
+        saldo=_saldo_creditos_conn(conn,usuario)
+        plan=conn.execute("SELECT nombre,creditos_mensuales,prestaciones_json FROM planes WHERE id=?",(saldo["plan"],)).fetchone()
+        movimientos=conn.execute("SELECT tipo,bolsa,cantidad,saldo_mensual_despues,saldo_adicional_despues,referencia,descripcion,creado FROM movimientos_creditos WHERE usuario=? ORDER BY id DESC LIMIT 30",(usuario,)).fetchall()
+        pendientes=conn.execute("SELECT COUNT(*) AS n FROM reservas_creditos WHERE usuario=? AND estado IN ('reservado','incidencia')",(usuario,)).fetchone()["n"]
+    saldo.update({"nombre_plan":plan["nombre"] if plan else saldo["plan"],"cuota_mensual_configurada":int(plan["creditos_mensuales"] or 0) if plan else 0,"prestaciones":json.loads(plan["prestaciones_json"] or "{}") if plan else {},"reservas_pendientes":int(pendientes),"movimientos": [dict(x) for x in movimientos]})
+    return saldo
+
 
 def _normalizar_resumen(resumen: dict) -> dict:
     resumen = resumen or {}
@@ -1335,17 +1663,26 @@ def modelos_disponibles():
 @app.post("/api/registro")
 @limiter.limit("5/hour")
 def registro(request: Request, payload: RegistroIn):
-    if payload.modelo_entrevista not in MODELOS_DISPONIBLES or payload.modelo_autobiografia not in MODELOS_DISPONIBLES: raise HTTPException(status_code=400,detail="Modelo no permitido")
+    # El modelo enviado por el navegador se ignora deliberadamente: el plan
+    # gratuito determina el modelo en el servidor.
     password_hash=bcrypt.hashpw(payload.password.encode(),bcrypt.gensalt()).decode()
+    ahora=datetime.utcnow().isoformat()
     with db() as conn:
         if conn.execute("SELECT 1 FROM usuarios WHERE usuario=?",(payload.usuario,)).fetchone(): raise HTTPException(status_code=400,detail="Ese nombre de usuario ya existe")
         if conn.execute("SELECT 1 FROM usuarios WHERE lower(email)=?",(payload.email,)).fetchone(): raise HTTPException(status_code=400,detail="Ese correo ya está asociado a una cuenta")
-        conn.execute("INSERT INTO usuarios(usuario,password_hash,creada,modelo_entrevista,modelo_autobiografia,email,email_verificado) VALUES(?,?,?,?,?,?,0)",(payload.usuario,password_hash,datetime.utcnow().isoformat(),payload.modelo_entrevista,payload.modelo_autobiografia,payload.email))
+        conn.execute("INSERT INTO usuarios(usuario,password_hash,creada,modelo_entrevista,modelo_autobiografia,email,email_verificado) VALUES(?,?,?,?,?,?,0)",(payload.usuario,password_hash,ahora,MODEL_ESTANDAR,MODEL_ESTANDAR,payload.email))
+        conn.execute("INSERT INTO cuentas_comerciales(usuario,plan_id,estado,creditos_mensuales,creditos_adicionales,creado,actualizado) VALUES(?,'free','activo',0,0,?,?)",(payload.usuario,ahora,ahora))
+    periodo_fin=(datetime.utcnow()+timedelta(days=30)).isoformat()
+    renovar_creditos_mensuales(payload.usuario,ahora,periodo_fin, f"alta:{payload.usuario}:{ahora}")
     try: enviar_verificacion_email(request,payload.usuario,payload.email)
     except Exception:
-        with db() as conn: conn.execute("DELETE FROM usuarios WHERE usuario=?",(payload.usuario,))
+        with db() as conn:
+            conn.execute("DELETE FROM movimientos_creditos WHERE usuario=?",(payload.usuario,))
+            conn.execute("DELETE FROM reservas_creditos WHERE usuario=?",(payload.usuario,))
+            conn.execute("DELETE FROM cuentas_comerciales WHERE usuario=?",(payload.usuario,))
+            conn.execute("DELETE FROM usuarios WHERE usuario=?",(payload.usuario,))
         raise HTTPException(status_code=503,detail="No se ha podido enviar el correo de verificación. La cuenta no se ha creado; inténtalo de nuevo más tarde.")
-    return {"ok":True,"requiere_verificacion":True}
+    return {"ok":True,"requiere_verificacion":True,"plan":"free"}
 
 @app.get("/api/verificar-email")
 def verificar_email(token: str):
@@ -1425,6 +1762,78 @@ def cuenta_actual(usuario: str = Depends(obtener_usuario_actual)):
     with db() as conn: row=conn.execute("SELECT usuario,email,email_verificado FROM usuarios WHERE usuario=?",(usuario,)).fetchone()
     return dict(row)
 
+@app.get("/api/creditos")
+def api_creditos(usuario: str = Depends(obtener_usuario_actual)):
+    return resumen_comercial_usuario(usuario)
+
+@app.get("/api/creditos/movimientos")
+def api_creditos_movimientos(usuario: str = Depends(obtener_usuario_actual), limite: int = 50):
+    limite=max(1,min(int(limite),200))
+    with db() as conn:
+        rows=conn.execute("SELECT id,tipo,bolsa,cantidad,saldo_mensual_despues,saldo_adicional_despues,referencia,descripcion,creado FROM movimientos_creditos WHERE usuario=? ORDER BY id DESC LIMIT ?",(usuario,limite)).fetchall()
+    return {"movimientos":[dict(r) for r in rows]}
+
+class AdminComercialIn(BaseModel):
+    admin_password: str
+
+@app.post("/api/admin/comercial/usuarios")
+@limiter.limit("10/minute")
+def admin_comercial_usuarios(request: Request, payload: AdminComercialIn):
+    requiere_admin(payload.admin_password)
+    with db() as conn:
+        rows=conn.execute("""SELECT u.usuario,u.email,c.plan_id,c.estado,c.creditos_mensuales,c.creditos_adicionales,c.periodo_inicio,c.periodo_fin,c.actualizado
+            FROM usuarios u LEFT JOIN cuentas_comerciales c ON c.usuario=u.usuario ORDER BY u.usuario""").fetchall()
+    return {"usuarios":[dict(r) for r in rows]}
+
+class AjusteCreditosIn(BaseModel):
+    admin_password: str
+    usuario: str
+    cantidad: int = Field(..., ge=1, le=100000000)
+    bolsa: str = "adicionales"
+    descripcion: str = Field(..., min_length=3, max_length=300)
+
+@app.post("/api/admin/comercial/ajustar-creditos")
+@limiter.limit("10/minute")
+def admin_ajustar_creditos(request: Request, payload: AjusteCreditosIn):
+    requiere_admin(payload.admin_password)
+    if payload.bolsa not in {"mensuales","adicionales"}: raise HTTPException(status_code=400,detail="Bolsa no válida")
+    return conceder_creditos(payload.usuario,payload.cantidad,payload.bolsa,"ajuste_administrativo",descripcion=payload.descripcion)
+
+class CambiarPlanComercialIn(BaseModel):
+    admin_password: str
+    usuario: str
+    plan_id: str
+
+@app.post("/api/admin/comercial/cambiar-plan")
+@limiter.limit("10/minute")
+def admin_cambiar_plan_comercial(request: Request, payload: CambiarPlanComercialIn):
+    requiere_admin(payload.admin_password)
+    if payload.plan_id not in {"free","premium","legacy"}: raise HTTPException(status_code=400,detail="Plan no válido")
+    ahora=datetime.utcnow().isoformat()
+    with db() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        plan=conn.execute("SELECT id,creditos_mensuales,modelo_entrevista,modelo_autobiografia FROM planes WHERE id=? AND activo=1",(payload.plan_id,)).fetchone()
+        if not plan: raise HTTPException(status_code=404,detail="Plan inexistente")
+        actual=conn.execute("SELECT usuario FROM cuentas_comerciales WHERE usuario=?",(payload.usuario,)).fetchone()
+        if not actual: raise HTTPException(status_code=404,detail="Usuario sin cuenta comercial")
+        conn.execute("UPDATE cuentas_comerciales SET plan_id=?,estado='activo',actualizado=? WHERE usuario=?",(payload.plan_id,ahora,payload.usuario))
+        if payload.plan_id != "legacy":
+            conn.execute("UPDATE usuarios SET modelo_entrevista=?,modelo_autobiografia=? WHERE usuario=?",
+                         (plan["modelo_entrevista"] or MODEL_ESTANDAR,plan["modelo_autobiografia"] or MODEL_ESTANDAR,payload.usuario))
+    periodo_fin=(datetime.utcnow()+timedelta(days=30)).isoformat()
+    renovar_creditos_mensuales(payload.usuario,ahora,periodo_fin,f"cambio-plan:{payload.usuario}:{ahora}")
+    return resumen_comercial_usuario(payload.usuario)
+
+class RegularizarIncidenciaIn(BaseModel):
+    admin_password: str
+    reserva_id: str
+
+@app.post("/api/admin/comercial/regularizar-incidencia")
+@limiter.limit("10/minute")
+def admin_regularizar_incidencia(request: Request, payload: RegularizarIncidenciaIn):
+    requiere_admin(payload.admin_password)
+    return regularizar_incidencia_creditos(payload.reserva_id)
+
 @app.post("/api/cuenta/cambiar-password")
 @limiter.limit("10/hour")
 def cambiar_password(request: Request, payload: CambiarPasswordIn, usuario: str = Depends(obtener_usuario_actual)):
@@ -1456,7 +1865,15 @@ def eliminar_cuenta(request: Request, password: str = Form(...), usuario: str = 
     with db() as conn: row=conn.execute("SELECT password_hash FROM usuarios WHERE usuario=?",(usuario,)).fetchone()
     if not row or not bcrypt.checkpw(password.encode(),row["password_hash"].encode()): raise HTTPException(status_code=403,detail="Contraseña incorrecta")
     borrar_datos_usuario(usuario)
-    with db() as conn: conn.execute("DELETE FROM tokens_cuenta WHERE usuario=?",(usuario,)); conn.execute("DELETE FROM sesiones_login WHERE usuario=?",(usuario,)); conn.execute("DELETE FROM usuarios WHERE usuario=?",(usuario,))
+    with db() as conn:
+        conn.execute("DELETE FROM movimientos_creditos WHERE usuario=?",(usuario,))
+        conn.execute("DELETE FROM reservas_creditos WHERE usuario=?",(usuario,))
+        conn.execute("DELETE FROM pagos WHERE usuario=?",(usuario,))
+        conn.execute("DELETE FROM suscripciones WHERE usuario=?",(usuario,))
+        conn.execute("DELETE FROM cuentas_comerciales WHERE usuario=?",(usuario,))
+        conn.execute("DELETE FROM tokens_cuenta WHERE usuario=?",(usuario,))
+        conn.execute("DELETE FROM sesiones_login WHERE usuario=?",(usuario,))
+        conn.execute("DELETE FROM usuarios WHERE usuario=?",(usuario,))
     return {"ok":True}
 
 @app.post("/api/logout")
@@ -1485,11 +1902,14 @@ def crear_usuario(request: Request, payload: CrearUsuarioIn):
         ).fetchone()
         if existe:
             raise HTTPException(status_code=400, detail="Ese nombre de usuario ya existe")
+        ahora=datetime.utcnow().isoformat()
         conn.execute(
             "INSERT INTO usuarios (usuario, password_hash, creada, modelo_entrevista, modelo_autobiografia) VALUES (?, ?, ?, ?, ?)",
-            (payload.usuario, password_hash, datetime.utcnow().isoformat(), MODEL_ESTANDAR, MODEL_ESTANDAR),
+            (payload.usuario, password_hash, ahora, MODEL_ESTANDAR, MODEL_ESTANDAR),
         )
-    return {"ok": True}
+        conn.execute("INSERT INTO cuentas_comerciales(usuario,plan_id,estado,creditos_mensuales,creditos_adicionales,creado,actualizado) VALUES(?,'free','activo',0,0,?,?)",(payload.usuario,ahora,ahora))
+    renovar_creditos_mensuales(payload.usuario,ahora,(datetime.utcnow()+timedelta(days=30)).isoformat(),f"alta:{payload.usuario}:{ahora}")
+    return {"ok": True, "plan": "free"}
 
 
 @app.get("/api/cuestionario")
