@@ -73,6 +73,28 @@
     <p class="resultado" id="resultado-listar"></p>
   </div>
 
+  <h2>Planes y créditos</h2>
+  <div class="caja">
+    <p class="aviso">Gestión interna previa a Stripe. Los ajustes quedan registrados en el libro de movimientos. No se realizan cobros desde este apartado.</p>
+    <button onclick="cargarComercial()">Cargar situación comercial</button>
+    <div id="resultado-comercial" class="resultado"></div>
+    <div id="tabla-comercial" style="overflow-x:auto;margin-top:12px;"></div>
+    <hr style="border:0;border-top:1px solid var(--linea);margin:18px 0;">
+    <h3>Modificar usuario seleccionado</h3>
+    <p class="aviso">Selecciona primero un usuario en «Usuarios existentes».</p>
+    <label>Plan</label>
+    <select id="plan-comercial"><option value="free">Gratuito</option><option value="premium">Premium</option><option value="legacy">Legado</option></select>
+    <button onclick="cambiarPlanComercial()">Guardar plan</button>
+    <label>Cantidad de créditos a conceder</label>
+    <input type="number" id="cantidad-creditos" min="1" max="100000000" value="100">
+    <label>Bolsa</label>
+    <select id="bolsa-creditos"><option value="adicionales">Adicionales (acumulables)</option><option value="mensuales">Mensuales</option></select>
+    <label>Motivo del ajuste</label>
+    <input type="text" id="motivo-creditos" maxlength="300" placeholder="Ej. compensación por incidencia">
+    <button onclick="ajustarCreditos()">Conceder créditos</button>
+    <p class="resultado" id="resultado-ajuste-creditos"></p>
+  </div>
+
   <h2>Backup individual (un usuario)</h2>
   <div class="caja">
     <p class="aviso">Usa el usuario seleccionado arriba en "Usuarios existentes".</p>
@@ -199,6 +221,37 @@ async function guardarModelosUsuario(){
     const r=await fetch('/api/admin/configurar-modelos',{method:'POST',credentials:'same-origin',body:fd});const d=await r.json();if(!r.ok)throw new Error(formatearDetalle(d));
     const u=usuariosAdmin.find(x=>x.usuario===usuario);if(u){u.modelo_entrevista=d.modelo_entrevista;u.modelo_autobiografia=d.modelo_autobiografia;}mostrar('resultado-modelos','Modelos guardados correctamente.',false);
   }catch(e){mostrar('resultado-modelos',e.message||'No se pudieron guardar los modelos.',true);}
+}
+
+function escaparComercial(valor) {
+  return String(valor ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+async function cargarComercial() {
+  try {
+    const r=await fetch('/api/admin/comercial/usuarios',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify({admin_password:passwordAdmin()})});
+    const d=await r.json(); if(!r.ok)throw new Error(formatearDetalle(d));
+    const filas=d.usuarios||[];
+    document.getElementById('tabla-comercial').innerHTML=filas.length?`<table style="width:100%;border-collapse:collapse;font:12px system-ui,sans-serif;"><thead><tr><th align="left">Usuario</th><th align="left">Plan</th><th align="right">Mensuales</th><th align="right">Adicionales</th></tr></thead><tbody>${filas.map(u=>`<tr><td>${escaparComercial(u.usuario)}</td><td>${escaparComercial(u.plan_id||'—')}</td><td align="right">${Number(u.creditos_mensuales||0)}</td><td align="right">${Number(u.creditos_adicionales||0)}</td></tr>`).join('')}</tbody></table>`:'No hay usuarios.';
+    mostrar('resultado-comercial',`${filas.length} cuenta(s) cargadas.`,false);
+  } catch(e) { mostrar('resultado-comercial',e.message||'No se pudo cargar la información comercial.',true); }
+}
+async function cambiarPlanComercial() {
+  const usuario=usuarioSeleccionado(); if(!usuario){mostrar('resultado-ajuste-creditos','Selecciona un usuario.',true);return;}
+  try {
+    const r=await fetch('/api/admin/comercial/cambiar-plan',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify({admin_password:passwordAdmin(),usuario,plan_id:document.getElementById('plan-comercial').value})});
+    const d=await r.json(); if(!r.ok)throw new Error(formatearDetalle(d));
+    mostrar('resultado-ajuste-creditos',`Plan actualizado. Saldo: ${d.total} créditos.`,false); cargarComercial();
+  } catch(e) { mostrar('resultado-ajuste-creditos',e.message||'No se pudo cambiar el plan.',true); }
+}
+async function ajustarCreditos() {
+  const usuario=usuarioSeleccionado(),cantidad=Number(document.getElementById('cantidad-creditos').value),descripcion=document.getElementById('motivo-creditos').value.trim();
+  if(!usuario){mostrar('resultado-ajuste-creditos','Selecciona un usuario.',true);return;}
+  if(!Number.isInteger(cantidad)||cantidad<=0||!descripcion){mostrar('resultado-ajuste-creditos','Indica una cantidad positiva y el motivo del ajuste.',true);return;}
+  try {
+    const r=await fetch('/api/admin/comercial/ajustar-creditos',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify({admin_password:passwordAdmin(),usuario,cantidad,bolsa:document.getElementById('bolsa-creditos').value,descripcion})});
+    const d=await r.json(); if(!r.ok)throw new Error(formatearDetalle(d));
+    mostrar('resultado-ajuste-creditos',`Créditos concedidos. Saldo mensual: ${d.mensuales}; adicionales: ${d.adicionales}.`,false); cargarComercial();
+  } catch(e) { mostrar('resultado-ajuste-creditos',e.message||'No se pudieron conceder créditos.',true); }
 }
 
 async function exportarUsuarioIndividual() {

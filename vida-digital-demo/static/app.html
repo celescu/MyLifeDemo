@@ -451,6 +451,14 @@
       </div>
 
       <div class="seccion-datos">
+        <h3>Plan y créditos</h3>
+        <p id="estado-plan-creditos">Cargando información comercial…</p>
+        <div id="resumen-creditos" style="font-family:system-ui,sans-serif;font-size:.9rem;"></div>
+        <div id="historial-creditos" style="font-family:system-ui,sans-serif;font-size:.82rem;margin-top:12px;"></div>
+        <p style="font-size:.8rem;color:var(--tinta-suave);margin-top:12px;">La gestión interna de créditos está preparada. Las compras, suscripciones y el descuento automático de operaciones se activarán en la siguiente fase, al integrar la pasarela de pago.</p>
+      </div>
+
+      <div class="seccion-datos">
         <h3>Descargar mis datos</h3>
         <p>Guarda una copia completa de lo que has contado.</p>
         <button class="boton-secundario" onclick="exportarMisDatos()">Descargar mi copia</button>
@@ -1813,7 +1821,21 @@ function abrirMisDatos() {
   cargarCuenta();
 }
 
-async function cargarCuenta(){try{const r=await apiFetch('/api/cuenta');const d=await r.json();document.getElementById('estado-cuenta').textContent=d.email ? `Correo: ${d.email} — ${d.email_verificado?'verificado':'pendiente de verificación'}` : 'Esta cuenta no tiene un correo asociado.';}catch(e){document.getElementById('estado-cuenta').textContent='No se pudo cargar la información de la cuenta.';}}
+async function cargarCuenta(){
+  try{
+    const r=await apiFetch('/api/cuenta');const d=await r.json();
+    document.getElementById('estado-cuenta').textContent=d.email ? `Correo: ${d.email} — ${d.email_verificado?'verificado':'pendiente de verificación'}` : 'Esta cuenta no tiene un correo asociado.';
+  }catch(e){document.getElementById('estado-cuenta').textContent='No se pudo cargar la información de la cuenta.';}
+  try{
+    const r=await apiFetch('/api/creditos');const d=await r.json();
+    if(!r.ok)throw new Error(d.detail||'No se pudo consultar el plan.');
+    const nombres={free:'Gratuito',premium:'Premium',legacy:'Acceso conservado'};
+    document.getElementById('estado-plan-creditos').textContent=`Plan: ${nombres[d.plan]||d.nombre_plan||d.plan} — Estado: ${d.estado}`;
+    document.getElementById('resumen-creditos').innerHTML=`<p>Créditos mensuales: <strong>${Number(d.mensuales||0).toLocaleString('es-ES')}</strong></p><p>Créditos adicionales: <strong>${Number(d.adicionales||0).toLocaleString('es-ES')}</strong></p><p>Total disponible: <strong>${Number(d.total||0).toLocaleString('es-ES')}</strong></p>`;
+    const movimientos=Array.isArray(d.movimientos)?d.movimientos:[];
+    document.getElementById('historial-creditos').innerHTML=movimientos.length?'<strong>Últimos movimientos</strong><ul>'+movimientos.map(m=>`<li>${escapeHtml(m.creado||'')} — ${escapeHtml(m.tipo||'')} (${escapeHtml(m.bolsa||'')}): ${Number(m.cantidad||0)>0?'+':''}${Number(m.cantidad||0)} créditos</li>`).join('')+'</ul>':'Todavía no hay movimientos de créditos.';
+  }catch(e){document.getElementById('estado-plan-creditos').textContent='No se pudo cargar la información de créditos.';document.getElementById('resumen-creditos').textContent='';document.getElementById('historial-creditos').textContent='';}
+}
 
 async function cambiarMiEmail(){const email=document.getElementById('nuevo-email').value.trim();const password=document.getElementById('password-email').value;if(!email||!password){mostrarResultadoMisDatos('Escribe el nuevo correo y tu contraseña actual.',true);return;}try{const r=await apiFetch('/api/cuenta/cambiar-email',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email,password})});const d=await r.json();mostrarResultadoMisDatos(r.ok?'Te hemos enviado un correo para confirmar la nueva dirección.':formatearDetalle(d),!r.ok);if(r.ok){document.getElementById('nuevo-email').value='';document.getElementById('password-email').value='';cargarCuenta();}}catch(e){mostrarResultadoMisDatos('No se pudo cambiar el correo.',true);}}
 
