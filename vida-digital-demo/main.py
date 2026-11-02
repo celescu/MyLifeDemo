@@ -552,6 +552,16 @@ def init_db_sobre(conn):
             UNIQUE(proveedor, evento_id)
         )
     """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS tarifas_servicios (
+            servicio_id TEXT PRIMARY KEY,
+            nombre TEXT NOT NULL,
+            descripcion TEXT NOT NULL DEFAULT '',
+            creditos INTEGER NOT NULL DEFAULT 0 CHECK(creditos >= 0),
+            activo INTEGER NOT NULL DEFAULT 1,
+            fecha_actualizada TEXT NOT NULL
+        )
+    """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_movimientos_usuario_fecha ON movimientos_creditos(usuario, creado)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_reservas_usuario_estado ON reservas_creditos(usuario, estado)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_suscripciones_usuario_estado ON suscripciones(usuario, estado)")
@@ -578,6 +588,20 @@ def init_db_sobre(conn):
               prestaciones_json=excluded.prestaciones_json,
               fecha_actualizada=excluded.fecha_actualizada""",
             (pid,nombre,cuota,me,ma,lm,lc,prestaciones,ahora_comercial))
+
+    servicios_base = [
+        ('reconstruir_recuerdos', 'Reconstruir recuerdos', 'Reconstrucción global a partir de conversaciones guardadas.'),
+        ('reprocesar_sesion', 'Reprocesar una sesión', 'Volver a analizar una sesión cerrada para extraer recuerdos.'),
+        ('cerrar_sesion', 'Procesar cierre de sesión', 'Generar o actualizar el resumen y los recuerdos al cerrar una sesión.'),
+        ('autobiografia_indice', 'Proponer estructura de autobiografía', 'Generar o proponer el índice y la estructura.'),
+        ('autobiografia_capitulo', 'Generar capítulo', 'Crear el contenido de un capítulo.'),
+        ('autobiografia_mejora', 'Mejorar capítulo', 'Reescribir o ampliar un capítulo existente.'),
+        ('autobiografia_completa', 'Generar autobiografía completa', 'Generar el texto unificado de toda la autobiografía.'),
+    ]
+    for servicio_id, nombre, descripcion in servicios_base:
+        conn.execute("""INSERT OR IGNORE INTO tarifas_servicios
+            (servicio_id,nombre,descripcion,creditos,activo,fecha_actualizada)
+            VALUES (?,?,?,0,1,?)""", (servicio_id,nombre,descripcion,ahora_comercial))
 
     # Toda cuenta que ya existía antes de implantar esta capa pasa a LEGACY.
     # Las cuentas nuevas se insertan explícitamente como FREE en su endpoint.
@@ -1775,6 +1799,41 @@ def api_creditos_movimientos(usuario: str = Depends(obtener_usuario_actual), lim
 
 class AdminComercialIn(BaseModel):
     admin_password: str
+
+class TarifaServicioIn(BaseModel):
+    servicio_id: str = Field(..., min_length=1, max_length=80)
+    creditos: int = Field(..., ge=0, le=100000000)
+
+class GuardarTarifasIn(BaseModel):
+    admin_password: str
+    tarifas: list[TarifaServicioIn]
+
+@app.post("/api/admin/comercial/tarifas")
+@limiter.limit("10/minute")
+def admin_listar_tarifas(request: Request, payload: AdminComercialIn):
+    requiere_admin(payload.admin_password)
+    with db() as conn:
+        filas=conn.execute("SELECT servicio_id,nombre,descripcion,creditos,activo,fecha_actualizada FROM tarifas_servicios ORDER BY rowid").fetchall()
+    return {"tarifas":[dict(x) for x in filas]}
+
+@app.post("/api/admin/comercial/tarifas/guardar")
+@limiter.limit("10/minute")
+def admin_guardar_tarifas(request: Request, payload: GuardarTarifasIn):
+    requiere_admin(payload.admin_password)
+    ahora=datetime.utcnow().isoformat()
+    vistos=set()
+    with db() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        for tarifa in payload.tarifas:
+            if tarifa.servicio_id in vistos:
+                raise HTTPException(status_code=400,detail="Servicio repetido en la solicitud")
+            vistos.add(tarifa.servicio_id)
+            cur=conn.execute("UPDATE tarifas_servicios SET creditos=?,fecha_actualizada=? WHERE servicio_id=?",
+                             (tarifa.creditos,ahora,tarifa.servicio_id))
+            if cur.rowcount != 1:
+                raise HTTPException(status_code=404,detail=f"Servicio no encontrado: {tarifa.servicio_id}")
+        filas=conn.execute("SELECT servicio_id,nombre,descripcion,creditos,activo,fecha_actualizada FROM tarifas_servicios ORDER BY rowid").fetchall()
+    return {"ok":True,"tarifas":[dict(x) for x in filas]}
 
 @app.post("/api/admin/comercial/usuarios")
 @limiter.limit("10/minute")

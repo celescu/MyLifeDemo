@@ -95,3 +95,13 @@ No se ha podido ejecutar una prueba de extremo a extremo del servidor FastAPI en
 6. Crear una cuenta de prueba y comprobar que aparece como `free`.
 7. Revisar `/api/creditos` y el apartado Cuenta.
 8. No activar todavía cobros ni consumo automático de créditos.
+
+## Tarifas configurables por servicio (2026-11-02, ampliación)
+
+Se incorpora la tabla `tarifas_servicios`, editable desde `admin.html`, para configurar el número de créditos de cada operación. Los servicios iniciales son reconstruir recuerdos, reprocesar una sesión, procesar el cierre de sesión, proponer la estructura de autobiografía, generar un capítulo, mejorar un capítulo y generar la autobiografía completa. Los importes se inicializan a cero deliberadamente: el administrador debe fijarlos según el coste real y el margen comercial deseado.
+
+Endpoints administrativos (requieren `admin_password`):
+- `POST /api/admin/comercial/tarifas`: consulta el catálogo y sus importes.
+- `POST /api/admin/comercial/tarifas/guardar`: guarda los importes enviados; admite cero para dejar un servicio sin coste.
+
+**Alcance:** esta ampliación guarda y permite editar las tarifas, pero todavía no conecta esas tarifas con reservas y liquidaciones automáticas en las rutas de IA. Por tanto, cambiar un importe en la tabla no empieza a descontar créditos a los usuarios. Esa conexión debe hacerse en una fase posterior, operación por operación, incluyendo tratamiento de errores y liquidación según el consumo real cuando proceda.

@@ -193,3 +193,9 @@ Comprobaciones previstas: sintaxis Python/JavaScript, búsqueda de referencias d
 - Añadida una vista de plan y saldo dentro de Cuenta.
 - No se integra Stripe ni se descuenta todavía crédito de las operaciones de IA; la aplicación conserva el funcionamiento actual hasta la siguiente fase.
 - Cuotas iniciales configuradas a cero para no inventar cantidades comerciales.
+
+2026-11-02 — Configuración de tarifas de servicios
+- Añadida tabla persistente tarifas_servicios.
+- Añadida sección «Coste de los servicios» en admin.html con edición de créditos por operación.
+- Añadidos endpoints administrativos para consultar y guardar tarifas.
+- Los valores iniciales son cero; el descuento automático de créditos aún no está conectado a las operaciones IA.
