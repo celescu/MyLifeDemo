@@ -84,8 +84,7 @@ LIMITE_TURNOS_POR_SESION = int(os.environ.get("LIMITE_TURNOS_POR_SESION", "50"))
 # límites comerciales; así la nueva capa no concede créditos arbitrarios.
 CREDITOS_GRATUITOS_MENSUALES = max(0, int(os.environ.get("CREDITOS_GRATUITOS_MENSUALES", "0")))
 CREDITOS_PREMIUM_MENSUALES = max(0, int(os.environ.get("CREDITOS_PREMIUM_MENSUALES", "0")))
-CREDITOS_FACTOR_COSTE = max(0.0, float(os.environ.get("CREDITOS_FACTOR_COSTE", "1.0")))
-CREDITOS_USD_POR_UNIDAD = max(0.000001, float(os.environ.get("CREDITOS_USD_POR_UNIDAD", "0.01")))
+CREDITOS_DIAS_CADUCIDAD = max(1, int(os.environ.get("CREDITOS_DIAS_CADUCIDAD", "365")))
 
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD")
 ADMIN_USERNAME = os.environ.get("ADMIN_USERNAME", "yo")
@@ -212,6 +211,15 @@ def _ejecutar_reconstruccion(job_id,usuario,filas):
                 if titulo: aplicar_titulo_generado(sid,titulo)
                 guardar_resumen(usuario,resumen_actual); procesadas+=1; hechas.add(sid); errores=[e for e in errores if e.get("sesion_id")!=sid]
                 _guardar_estado_reconstruccion(job_id,procesadas=procesadas,errores=json.dumps(errores,ensure_ascii=False),procesadas_ids=json.dumps(sorted(hechas)),mensaje=f"Sesión {sid} reconstruida correctamente.")
+            except HTTPException as exc:
+                if exc.status_code == 402:
+                    _guardar_estado_reconstruccion(job_id,estado="sin_creditos",sesion_actual=None,fin=datetime.utcnow().isoformat(),
+                        procesadas=procesadas,omitidas=omitidas,errores=json.dumps(errores,ensure_ascii=False),
+                        procesadas_ids=json.dumps(sorted(hechas)),mensaje=str(exc.detail))
+                    return
+                detalle=str(exc.detail or exc); print(f"[ERROR] reconstruir_memoria, sesión {sid}: {detalle}")
+                errores=[e for e in errores if e.get("sesion_id")!=sid]+[{"sesion_id":sid,"error":detalle}]
+                _guardar_estado_reconstruccion(job_id,errores=json.dumps(errores,ensure_ascii=False),mensaje=f"La sesión {sid} ha dado un error; continúo con la siguiente.")
             except Exception as exc:
                 detalle=str(exc) or exc.__class__.__name__; print(f"[ERROR] reconstruir_memoria, sesión {sid}: {detalle}"); traceback.print_exc()
                 errores=[e for e in errores if e.get("sesion_id")!=sid]+[{"sesion_id":sid,"error":detalle}]
@@ -234,10 +242,12 @@ def _iniciar_hilo_reconstruccion(job_id,usuario,filas):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     tarea_backups = asyncio.create_task(bucle_backups_automaticos())
+    tarea_caducidad = asyncio.create_task(bucle_caducidad_creditos())
     try:
         yield
     finally:
         tarea_backups.cancel()
+        tarea_caducidad.cancel()
 
 
 app = FastAPI(lifespan=lifespan)
@@ -467,6 +477,8 @@ def init_db_sobre(conn):
             estado TEXT NOT NULL DEFAULT 'activo',
             creditos_mensuales INTEGER NOT NULL DEFAULT 0,
             creditos_adicionales INTEGER NOT NULL DEFAULT 0,
+            creditos_saldo INTEGER NOT NULL DEFAULT 0,
+            creditos_caducidad TEXT,
             periodo_inicio TEXT,
             periodo_fin TEXT,
             creado TEXT NOT NULL,
@@ -559,6 +571,7 @@ def init_db_sobre(conn):
             descripcion TEXT NOT NULL DEFAULT '',
             creditos INTEGER NOT NULL DEFAULT 0 CHECK(creditos >= 0),
             activo INTEGER NOT NULL DEFAULT 1,
+            configurada INTEGER NOT NULL DEFAULT 0,
             fecha_actualizada TEXT NOT NULL
         )
     """)
@@ -590,18 +603,37 @@ def init_db_sobre(conn):
             (pid,nombre,cuota,me,ma,lm,lc,prestaciones,ahora_comercial))
 
     servicios_base = [
-        ('reconstruir_recuerdos', 'Reconstruir recuerdos', 'Reconstrucción global a partir de conversaciones guardadas.'),
-        ('reprocesar_sesion', 'Reprocesar una sesión', 'Volver a analizar una sesión cerrada para extraer recuerdos.'),
-        ('cerrar_sesion', 'Procesar cierre de sesión', 'Generar o actualizar el resumen y los recuerdos al cerrar una sesión.'),
-        ('autobiografia_indice', 'Proponer estructura de autobiografía', 'Generar o proponer el índice y la estructura.'),
-        ('autobiografia_capitulo', 'Generar capítulo', 'Crear el contenido de un capítulo.'),
-        ('autobiografia_mejora', 'Mejorar capítulo', 'Reescribir o ampliar un capítulo existente.'),
-        ('autobiografia_completa', 'Generar autobiografía completa', 'Generar el texto unificado de toda la autobiografía.'),
+        ('entrevista', 'Turno de entrevista', 'Cada respuesta de Lira a un mensaje del usuario.', 5),
+        ('aportacion_externa', 'Turno de aportación', 'Cada respuesta de Lira en una aportación externa.', 5),
+        ('cerrar_sesion', 'Cerrar sesión y actualizar recuerdos', 'Por sesión procesada al cerrarla.', 15),
+        ('reprocesar_sesion', 'Reprocesar una sesión', 'Por sesión cerrada que se vuelve a analizar.', 15),
+        ('reconstruir_recuerdos', 'Reconstruir recuerdos', 'Por cada conversación procesada durante la reconstrucción global.', 15),
+        ('autobiografia_indice', 'Proponer estructura de autobiografía', 'Por generación de índice y estructura.', 15),
+        ('autobiografia_capitulo', 'Generar capítulo', 'Por capítulo generado.', 25),
+        ('autobiografia_mejora', 'Mejorar capítulo', 'Por cada operación de mejora de un capítulo.', 15),
+        ('autobiografia_completa', 'Generar autobiografía completa', 'Por generación o unificación del libro completo.', 80),
     ]
-    for servicio_id, nombre, descripcion in servicios_base:
+    columnas_tarifas = {fila[1] for fila in conn.execute("PRAGMA table_info(tarifas_servicios)").fetchall()}
+    if "configurada" not in columnas_tarifas:
+        conn.execute("ALTER TABLE tarifas_servicios ADD COLUMN configurada INTEGER NOT NULL DEFAULT 0")
+    for servicio_id, nombre, descripcion, creditos_base in servicios_base:
         conn.execute("""INSERT OR IGNORE INTO tarifas_servicios
-            (servicio_id,nombre,descripcion,creditos,activo,fecha_actualizada)
-            VALUES (?,?,?,0,1,?)""", (servicio_id,nombre,descripcion,ahora_comercial))
+            (servicio_id,nombre,descripcion,creditos,activo,configurada,fecha_actualizada)
+            VALUES (?,?,?,?,1,0,?)""", (servicio_id,nombre,descripcion,creditos_base,ahora_comercial))
+        conn.execute("""UPDATE tarifas_servicios SET nombre=?,descripcion=?,creditos=?,fecha_actualizada=?
+            WHERE servicio_id=? AND configurada=0""",
+            (nombre,descripcion,creditos_base,ahora_comercial,servicio_id))
+
+    # Migración: consolidar las dos antiguas bolsas en un único saldo.
+    columnas_cuenta_comercial = {fila[1] for fila in conn.execute("PRAGMA table_info(cuentas_comerciales)").fetchall()}
+    if "creditos_saldo" not in columnas_cuenta_comercial:
+        conn.execute("ALTER TABLE cuentas_comerciales ADD COLUMN creditos_saldo INTEGER NOT NULL DEFAULT 0")
+        conn.execute("UPDATE cuentas_comerciales SET creditos_saldo=COALESCE(creditos_mensuales,0)+COALESCE(creditos_adicionales,0),creditos_mensuales=0,creditos_adicionales=0")
+    if "creditos_caducidad" not in columnas_cuenta_comercial:
+        conn.execute("ALTER TABLE cuentas_comerciales ADD COLUMN creditos_caducidad TEXT")
+        caducidad_migracion = (datetime.utcnow()+timedelta(days=CREDITOS_DIAS_CADUCIDAD)).isoformat()
+        conn.execute("""UPDATE cuentas_comerciales SET creditos_caducidad=
+            CASE WHEN creditos_saldo>0 THEN ? ELSE NULL END""", (caducidad_migracion,))
 
     # Toda cuenta que ya existía antes de implantar esta capa pasa a LEGACY.
     # Las cuentas nuevas se insertan explícitamente como FREE en su endpoint.
@@ -936,11 +968,76 @@ def coste_uso_ia(usuario: str, operacion: str | None = None, referencia: str | i
 # Motor interno de créditos (sin dependencia de Stripe)
 # ---------------------------------------------------------------------------
 
-def _saldo_creditos_conn(conn, usuario: str) -> dict:
-    row=conn.execute("SELECT plan_id,estado,creditos_mensuales,creditos_adicionales,periodo_inicio,periodo_fin FROM cuentas_comerciales WHERE usuario=?",(usuario,)).fetchone()
+def _limpiar_reservas_expiradas_conn(conn, usuario: str) -> None:
+    """Devuelve reservas abandonadas al saldo si los créditos aún no han caducado."""
+    ahora=datetime.utcnow()
+    filas=conn.execute("""SELECT * FROM reservas_creditos
+        WHERE usuario=? AND estado='reservado' AND expira IS NOT NULL AND expira<=?""",
+        (usuario,ahora.isoformat())).fetchall()
+    for reserva in filas:
+        cuenta=conn.execute("SELECT creditos_caducidad FROM cuentas_comerciales WHERE usuario=?",(usuario,)).fetchone()
+        caducidad=cuenta["creditos_caducidad"] if cuenta else None
+        vigentes=not caducidad or datetime.fromisoformat(caducidad)>ahora
+        cantidad=int(reserva["cantidad_reservada"] or 0)
+        if vigentes and cantidad:
+            conn.execute("UPDATE cuentas_comerciales SET creditos_saldo=creditos_saldo+?,actualizado=? WHERE usuario=?",
+                         (cantidad,ahora.isoformat(),usuario))
+            saldo=conn.execute("SELECT creditos_saldo FROM cuentas_comerciales WHERE usuario=?",(usuario,)).fetchone()
+            clave=f"{reserva['clave_idempotencia']}:expirada"
+            if not conn.execute("SELECT 1 FROM movimientos_creditos WHERE clave_idempotencia=?",(clave,)).fetchone():
+                conn.execute("""INSERT INTO movimientos_creditos
+                    (usuario,tipo,bolsa,cantidad,saldo_mensual_despues,saldo_adicional_despues,
+                     referencia,clave_idempotencia,descripcion,creado)
+                    VALUES(?,?,?,?,?,?,?,?,?,?)""",
+                    (usuario,"liberacion","unico",cantidad,int(saldo["creditos_saldo"] or 0),0,
+                     reserva["id"],clave,"Liberación automática de una reserva vencida",ahora.isoformat()))
+        conn.execute("UPDATE reservas_creditos SET estado='liberado',cantidad_liquidada=0,actualizado=? WHERE id=?",
+                     (ahora.isoformat(),reserva["id"]))
+
+
+def _aplicar_caducidad_creditos_conn(conn, usuario: str) -> None:
+    """Caduca el saldo completo al alcanzar su única fecha global."""
+    row = conn.execute(
+        "SELECT creditos_saldo,creditos_caducidad FROM cuentas_comerciales WHERE usuario=?",
+        (usuario,),
+    ).fetchone()
     if not row:
         raise HTTPException(status_code=404, detail="No existe la cuenta comercial del usuario")
-    return {"plan":row["plan_id"],"estado":row["estado"],"mensuales":int(row["creditos_mensuales"] or 0),"adicionales":int(row["creditos_adicionales"] or 0),"total":int(row["creditos_mensuales"] or 0)+int(row["creditos_adicionales"] or 0),"periodo_inicio":row["periodo_inicio"],"periodo_fin":row["periodo_fin"]}
+    saldo = int(row["creditos_saldo"] or 0)
+    caducidad = row["creditos_caducidad"]
+    ahora = datetime.utcnow()
+    if caducidad:
+        try:
+            vencimiento = datetime.fromisoformat(caducidad)
+        except (TypeError, ValueError):
+            vencimiento = ahora
+        if vencimiento <= ahora:
+            activas=conn.execute("SELECT COUNT(*) AS n FROM reservas_creditos WHERE usuario=? AND estado='reservado'",(usuario,)).fetchone()["n"]
+            # Conserva temporalmente la fecha vencida mientras haya una llamada reservada:
+            # así, si falla, sus créditos no se reponen después de caducar.
+            nueva_caducidad=caducidad if int(activas or 0)>0 else None
+            conn.execute("""UPDATE cuentas_comerciales SET creditos_saldo=0,
+                creditos_mensuales=0,creditos_adicionales=0,creditos_caducidad=?,actualizado=?
+                WHERE usuario=?""", (nueva_caducidad,ahora.isoformat(),usuario))
+            clave = f"caducidad-global:{usuario}:{caducidad}"
+            if saldo > 0 and not conn.execute("SELECT 1 FROM movimientos_creditos WHERE clave_idempotencia=?", (clave,)).fetchone():
+                conn.execute("""INSERT INTO movimientos_creditos
+                    (usuario,tipo,bolsa,cantidad,saldo_mensual_despues,saldo_adicional_despues,
+                     referencia,clave_idempotencia,descripcion,creado)
+                    VALUES(?,?,?,?,?,?,?,?,?,?)""",
+                    (usuario,"caducidad","unico",-saldo,0,0,caducidad,clave,
+                     "Caducidad del saldo completo de créditos",ahora.isoformat()))
+
+def _saldo_creditos_conn(conn, usuario: str) -> dict:
+    _limpiar_reservas_expiradas_conn(conn,usuario)
+    _aplicar_caducidad_creditos_conn(conn, usuario)
+    row=conn.execute("SELECT plan_id,estado,creditos_saldo,creditos_caducidad,periodo_inicio,periodo_fin FROM cuentas_comerciales WHERE usuario=?",(usuario,)).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="No existe la cuenta comercial del usuario")
+    total=int(row["creditos_saldo"] or 0)
+    return {"plan":row["plan_id"],"estado":row["estado"],"mensuales":0,"adicionales":0,
+            "total":total,"saldo":total,"caducidad":row["creditos_caducidad"],
+            "periodo_inicio":row["periodo_inicio"],"periodo_fin":row["periodo_fin"]}
 
 def obtener_saldo_creditos(usuario: str) -> dict:
     with db() as conn: return _saldo_creditos_conn(conn,usuario)
@@ -951,33 +1048,37 @@ def _registrar_movimiento_conn(conn, usuario: str, tipo: str, bolsa: str, cantid
     conn.execute("""INSERT INTO movimientos_creditos
         (usuario,tipo,bolsa,cantidad,saldo_mensual_despues,saldo_adicional_despues,referencia,clave_idempotencia,descripcion,creado)
         VALUES (?,?,?,?,?,?,?,?,?,?)""",
-        (usuario,tipo,bolsa,int(cantidad),saldo["mensuales"],saldo["adicionales"],
+        (usuario,tipo,"unico",int(cantidad),saldo["total"],0,
          str(referencia) if referencia is not None else None,clave_idempotencia,descripcion,datetime.utcnow().isoformat()))
 
-def conceder_creditos(usuario: str, cantidad: int, bolsa: str="adicionales", tipo: str="ajuste",
+
+def conceder_creditos(usuario: str, cantidad: int, bolsa: str="unico", tipo: str="ajuste",
                        referencia=None, clave_idempotencia=None, descripcion="") -> dict:
-    """Concede créditos en una transacción. La clave idempotente evita duplicados."""
+    """Añade créditos al saldo único y renueva su caducidad global."""
     cantidad=int(cantidad)
     if cantidad<=0: raise ValueError("La cantidad debe ser positiva")
-    if bolsa not in {"mensuales","adicionales"}: raise ValueError("Bolsa de créditos no válida")
     with db() as conn:
         conn.execute("BEGIN IMMEDIATE")
         if clave_idempotencia and conn.execute("SELECT 1 FROM movimientos_creditos WHERE clave_idempotencia=?",(clave_idempotencia,)).fetchone():
             return _saldo_creditos_conn(conn,usuario)
-        columna="creditos_mensuales" if bolsa=="mensuales" else "creditos_adicionales"
-        conn.execute(f"UPDATE cuentas_comerciales SET {columna}={columna}+?,actualizado=? WHERE usuario=?",(cantidad,datetime.utcnow().isoformat(),usuario))
+        _aplicar_caducidad_creditos_conn(conn,usuario)
+        caducidad=(datetime.utcnow()+timedelta(days=CREDITOS_DIAS_CADUCIDAD)).isoformat()
+        conn.execute("""UPDATE cuentas_comerciales SET creditos_saldo=creditos_saldo+?,
+            creditos_mensuales=0,creditos_adicionales=0,creditos_caducidad=?,actualizado=? WHERE usuario=?""",
+            (cantidad,caducidad,datetime.utcnow().isoformat(),usuario))
         if conn.execute("SELECT changes()").fetchone()[0] != 1: raise HTTPException(status_code=404,detail="Cuenta comercial inexistente")
-        _registrar_movimiento_conn(conn,usuario,tipo,bolsa,cantidad,referencia,clave_idempotencia,descripcion)
+        _registrar_movimiento_conn(conn,usuario,tipo,"unico",cantidad,referencia,clave_idempotencia,descripcion)
         return _saldo_creditos_conn(conn,usuario)
 
 def reservar_creditos(usuario: str, operacion: str, cantidad: int, referencia=None,
                       clave_idempotencia: str | None=None, minutos_expiracion: int=120) -> str:
-    """Reserva saldo mensual primero y adicional después. No permite saldo negativo."""
+    """Reserva saldo único de forma transaccional; no permite saldo negativo."""
     cantidad=int(cantidad)
     if cantidad<=0: raise ValueError("La reserva debe ser positiva")
     clave=clave_idempotencia or secrets.token_urlsafe(24)
     with db() as conn:
         conn.execute("BEGIN IMMEDIATE")
+        _saldo_creditos_conn(conn,usuario)  # aplica caducidad y libera reservas abandonadas
         existente=conn.execute("SELECT id,usuario,estado FROM reservas_creditos WHERE clave_idempotencia=?",(clave,)).fetchone()
         if existente:
             if existente["usuario"]!=usuario: raise HTTPException(status_code=409,detail="Clave de idempotencia ya utilizada")
@@ -986,25 +1087,20 @@ def reservar_creditos(usuario: str, operacion: str, cantidad: int, referencia=No
         incidencia=conn.execute("SELECT 1 FROM reservas_creditos WHERE usuario=? AND estado='incidencia' AND deficit>0 LIMIT 1",(usuario,)).fetchone()
         if incidencia: raise HTTPException(status_code=409,detail="Tu cuenta tiene una incidencia de consumo pendiente de regularización")
         saldo=_saldo_creditos_conn(conn,usuario)
-        if saldo["total"]<cantidad: raise HTTPException(status_code=402,detail="No tienes créditos suficientes para esta operación")
-        mensual=min(saldo["mensuales"],cantidad); adicional=cantidad-mensual
-        conn.execute("UPDATE cuentas_comerciales SET creditos_mensuales=creditos_mensuales-?,creditos_adicionales=creditos_adicionales-?,actualizado=? WHERE usuario=?",
-                     (mensual,adicional,datetime.utcnow().isoformat(),usuario))
+        if saldo["total"]<cantidad:
+            raise HTTPException(status_code=402,detail=f"No tienes créditos suficientes. Esta operación necesita {cantidad} créditos y tienes {saldo['total']} disponibles.")
+        conn.execute("UPDATE cuentas_comerciales SET creditos_saldo=creditos_saldo-?,actualizado=? WHERE usuario=?",
+                     (cantidad,datetime.utcnow().isoformat(),usuario))
         rid=secrets.token_urlsafe(18); ahora=datetime.utcnow(); expira=(ahora+timedelta(minutes=max(1,minutos_expiracion))).isoformat()
         conn.execute("""INSERT INTO reservas_creditos
             (id,usuario,operacion,referencia,clave_idempotencia,cantidad_reservada,mensual_reservado,adicional_reservado,estado,creado,actualizado,expira)
-            VALUES(?,?,?,?,?,?,?,?, 'reservado',?,?,?)""",
-            (rid,usuario,operacion,str(referencia) if referencia is not None else None,clave,cantidad,mensual,adicional,ahora.isoformat(),ahora.isoformat(),expira))
-        if mensual: _registrar_movimiento_conn(conn,usuario,"reserva","mensuales",-mensual,rid,f"{clave}:reserva:m",f"Reserva para {operacion}")
-        if adicional: _registrar_movimiento_conn(conn,usuario,"reserva","adicionales",-adicional,rid,f"{clave}:reserva:a",f"Reserva para {operacion}")
+            VALUES(?,?,?,?,?,?,?,0,'reservado',?,?,?)""",
+            (rid,usuario,operacion,str(referencia) if referencia is not None else None,clave,cantidad,cantidad,ahora.isoformat(),ahora.isoformat(),expira))
+        _registrar_movimiento_conn(conn,usuario,"reserva","unico",-cantidad,rid,f"{clave}:reserva",f"Reserva para {operacion}")
         return rid
 
 def liquidar_reserva_creditos(reserva_id: str, coste_real: int) -> dict:
-    """Liquida la reserva; devuelve el sobrante o intenta cubrir un exceso.
-
-    Si el coste real supera la reserva y no hay saldo adicional, registra un
-    déficit y bloquea nuevas reservas hasta que se regularice manualmente.
-    """
+    """Liquida la reserva y devuelve cualquier sobrante al saldo único."""
     coste_real=int(coste_real)
     if coste_real<0: raise ValueError("El coste no puede ser negativo")
     with db() as conn:
@@ -1016,20 +1112,21 @@ def liquidar_reserva_creditos(reserva_id: str, coste_real: int) -> dict:
         deficit=0
         if exceso:
             saldo=_saldo_creditos_conn(conn,usuario)
-            mensual=min(saldo["mensuales"],exceso); adicional=min(saldo["adicionales"],exceso-mensual); deficit=exceso-mensual-adicional
-            conn.execute("UPDATE cuentas_comerciales SET creditos_mensuales=creditos_mensuales-?,creditos_adicionales=creditos_adicionales-?,actualizado=? WHERE usuario=?",(mensual,adicional,datetime.utcnow().isoformat(),usuario))
-            if mensual: _registrar_movimiento_conn(conn,usuario,"consumo_ajuste","mensuales",-mensual,reserva_id,f"{r['clave_idempotencia']}:exceso:m","Exceso de consumo sobre reserva")
-            if adicional: _registrar_movimiento_conn(conn,usuario,"consumo_ajuste","adicionales",-adicional,reserva_id,f"{r['clave_idempotencia']}:exceso:a","Exceso de consumo sobre reserva")
+            cobrado=min(saldo["total"],exceso); deficit=exceso-cobrado
+            if cobrado:
+                conn.execute("UPDATE cuentas_comerciales SET creditos_saldo=creditos_saldo-?,actualizado=? WHERE usuario=?",(cobrado,datetime.utcnow().isoformat(),usuario))
+                _registrar_movimiento_conn(conn,usuario,"consumo_ajuste","unico",-cobrado,reserva_id,f"{r['clave_idempotencia']}:exceso","Exceso de consumo sobre reserva")
         if sobrante:
-            # Se consumen primero los mensuales; por tanto, el sobrante se
-            # devuelve primero a la bolsa adicional (la última utilizada).
-            devolver_a=min(int(r["adicional_reservado"]),sobrante); devolver_m=sobrante-devolver_a
-            conn.execute("UPDATE cuentas_comerciales SET creditos_mensuales=creditos_mensuales+?,creditos_adicionales=creditos_adicionales+?,actualizado=? WHERE usuario=?",(devolver_m,devolver_a,datetime.utcnow().isoformat(),usuario))
-            if devolver_m: _registrar_movimiento_conn(conn,usuario,"liberacion","mensuales",devolver_m,reserva_id,f"{r['clave_idempotencia']}:libera:m","Créditos no utilizados")
-            if devolver_a: _registrar_movimiento_conn(conn,usuario,"liberacion","adicionales",devolver_a,reserva_id,f"{r['clave_idempotencia']}:libera:a","Créditos no utilizados")
+            _aplicar_caducidad_creditos_conn(conn,usuario)
+            cuenta=conn.execute("SELECT creditos_caducidad FROM cuentas_comerciales WHERE usuario=?",(usuario,)).fetchone()
+            caducidad=cuenta["creditos_caducidad"] if cuenta else None
+            if not caducidad or datetime.fromisoformat(caducidad)>datetime.utcnow():
+                conn.execute("UPDATE cuentas_comerciales SET creditos_saldo=creditos_saldo+?,actualizado=? WHERE usuario=?",(sobrante,datetime.utcnow().isoformat(),usuario))
+                _registrar_movimiento_conn(conn,usuario,"liberacion","unico",sobrante,reserva_id,f"{r['clave_idempotencia']}:libera","Créditos no utilizados")
         estado="incidencia" if deficit else "liquidado"
         conn.execute("UPDATE reservas_creditos SET cantidad_liquidada=?,deficit=?,estado=?,actualizado=? WHERE id=?",(coste_real,deficit,estado,datetime.utcnow().isoformat(),reserva_id))
         return _saldo_creditos_conn(conn,usuario)
+
 
 def liberar_reserva_creditos(reserva_id: str, motivo: str="Operación no completada") -> dict:
     with db() as conn:
@@ -1037,45 +1134,40 @@ def liberar_reserva_creditos(reserva_id: str, motivo: str="Operación no complet
         r=conn.execute("SELECT * FROM reservas_creditos WHERE id=?",(reserva_id,)).fetchone()
         if not r: raise HTTPException(status_code=404,detail="Reserva inexistente")
         if r["estado"]!="reservado": return _saldo_creditos_conn(conn,r["usuario"])
-        usuario=r["usuario"]; m=int(r["mensual_reservado"]); a=int(r["adicional_reservado"])
-        conn.execute("UPDATE cuentas_comerciales SET creditos_mensuales=creditos_mensuales+?,creditos_adicionales=creditos_adicionales+?,actualizado=? WHERE usuario=?",(m,a,datetime.utcnow().isoformat(),usuario))
-        if m: _registrar_movimiento_conn(conn,usuario,"liberacion","mensuales",m,reserva_id,f"{r['clave_idempotencia']}:libera:m",motivo)
-        if a: _registrar_movimiento_conn(conn,usuario,"liberacion","adicionales",a,reserva_id,f"{r['clave_idempotencia']}:libera:a",motivo)
+        usuario=r["usuario"]
+        cuenta_antes=conn.execute("SELECT creditos_caducidad FROM cuentas_comerciales WHERE usuario=?",(usuario,)).fetchone()
+        caducidad_antes=cuenta_antes["creditos_caducidad"] if cuenta_antes else None
+        ya_caducado=bool(caducidad_antes and datetime.fromisoformat(caducidad_antes)<=datetime.utcnow())
+        _aplicar_caducidad_creditos_conn(conn,usuario)
+        cantidad=int(r["cantidad_reservada"])
+        if not ya_caducado:
+            conn.execute("UPDATE cuentas_comerciales SET creditos_saldo=creditos_saldo+?,actualizado=? WHERE usuario=?",(cantidad,datetime.utcnow().isoformat(),usuario))
+            _registrar_movimiento_conn(conn,usuario,"liberacion","unico",cantidad,reserva_id,f"{r['clave_idempotencia']}:libera",motivo)
         conn.execute("UPDATE reservas_creditos SET estado='liberado',cantidad_liquidada=0,actualizado=? WHERE id=?",(datetime.utcnow().isoformat(),reserva_id))
         return _saldo_creditos_conn(conn,usuario)
 
 def renovar_creditos_mensuales(usuario: str, periodo_inicio: str, periodo_fin: str,
                                clave_idempotencia: str | None=None) -> dict:
-    """Renueva la bolsa mensual. La clave del periodo evita dobles abonos.
-
-    Se invocará desde la renovación de Stripe en la siguiente fase; por ahora
-    también permite probar manualmente el ciclo de créditos sin pagos reales.
-    """
+    """Añade la cuota del nuevo periodo al saldo único y renueva su caducidad global."""
     clave=clave_idempotencia or f"renovacion:{usuario}:{periodo_inicio}"
     with db() as conn:
         conn.execute("BEGIN IMMEDIATE")
         if conn.execute("SELECT 1 FROM movimientos_creditos WHERE clave_idempotencia=?",(clave,)).fetchone():
             return _saldo_creditos_conn(conn,usuario)
-        cuenta=conn.execute("SELECT plan_id,creditos_mensuales FROM cuentas_comerciales WHERE usuario=?",(usuario,)).fetchone()
+        cuenta=conn.execute("SELECT plan_id FROM cuentas_comerciales WHERE usuario=?",(usuario,)).fetchone()
         if not cuenta: raise HTTPException(status_code=404,detail="Cuenta comercial inexistente")
+        _aplicar_caducidad_creditos_conn(conn,usuario)
         plan=conn.execute("SELECT creditos_mensuales FROM planes WHERE id=?",(cuenta["plan_id"],)).fetchone()
         nueva_cuota=int(plan["creditos_mensuales"] or 0) if plan else 0
-        saldo_anterior=int(cuenta["creditos_mensuales"] or 0)
-        ahora=datetime.utcnow().isoformat()
-        # Primero caducan los créditos del periodo anterior y se registra
-        # su saldo final real; después se asigna la nueva cuota.
-        conn.execute("UPDATE cuentas_comerciales SET creditos_mensuales=0,periodo_inicio=?,periodo_fin=?,actualizado=? WHERE usuario=?",
-                     (periodo_inicio,periodo_fin,ahora,usuario))
-        if saldo_anterior:
-            _registrar_movimiento_conn(conn,usuario,"caducidad","mensuales",-saldo_anterior,periodo_inicio,f"{clave}:caducidad", "Caducidad de créditos del periodo anterior")
-        conn.execute("UPDATE cuentas_comerciales SET creditos_mensuales=?,actualizado=? WHERE usuario=?",(nueva_cuota,ahora,usuario))
-        if nueva_cuota:
-            _registrar_movimiento_conn(conn,usuario,"renovacion","mensuales",nueva_cuota,periodo_inicio,clave,"Asignación de créditos del nuevo periodo")
-        else:
-            # Registrar también la renovación de cuota cero para conservar
-            # idempotencia y trazabilidad del periodo.
-            _registrar_movimiento_conn(conn,usuario,"renovacion","mensuales",0,periodo_inicio,clave,"Renovación sin créditos incluidos")
+        ahora=datetime.utcnow(); caducidad=(ahora+timedelta(days=CREDITOS_DIAS_CADUCIDAD)).isoformat()
+        conn.execute("""UPDATE cuentas_comerciales SET creditos_saldo=creditos_saldo+?,
+            creditos_caducidad=CASE WHEN ?>0 THEN ? ELSE creditos_caducidad END,
+            periodo_inicio=?,periodo_fin=?,actualizado=? WHERE usuario=?""",
+            (nueva_cuota,nueva_cuota,caducidad,periodo_inicio,periodo_fin,ahora.isoformat(),usuario))
+        _registrar_movimiento_conn(conn,usuario,"renovacion","unico",nueva_cuota,periodo_inicio,clave,
+            "Asignación de créditos del nuevo periodo" if nueva_cuota else "Renovación sin créditos incluidos")
         return _saldo_creditos_conn(conn,usuario)
+
 
 def regularizar_incidencia_creditos(reserva_id: str) -> dict:
     """Cobra un déficit pendiente si el usuario ya dispone de saldo suficiente."""
@@ -1087,23 +1179,88 @@ def regularizar_incidencia_creditos(reserva_id: str) -> dict:
             return _saldo_creditos_conn(conn,r["usuario"])
         usuario=r["usuario"]; deficit=int(r["deficit"]); saldo=_saldo_creditos_conn(conn,usuario)
         if saldo["total"]<deficit: raise HTTPException(status_code=402,detail="Todavía no hay créditos suficientes para regularizar la incidencia")
-        mensual=min(saldo["mensuales"],deficit); adicional=deficit-mensual
-        conn.execute("UPDATE cuentas_comerciales SET creditos_mensuales=creditos_mensuales-?,creditos_adicionales=creditos_adicionales-?,actualizado=? WHERE usuario=?",(mensual,adicional,datetime.utcnow().isoformat(),usuario))
-        if mensual: _registrar_movimiento_conn(conn,usuario,"regularizacion","mensuales",-mensual,reserva_id,f"{r['clave_idempotencia']}:regulariza:m","Regularización de exceso de consumo")
-        if adicional: _registrar_movimiento_conn(conn,usuario,"regularizacion","adicionales",-adicional,reserva_id,f"{r['clave_idempotencia']}:regulariza:a","Regularización de exceso de consumo")
+        conn.execute("UPDATE cuentas_comerciales SET creditos_saldo=creditos_saldo-?,actualizado=? WHERE usuario=?",(deficit,datetime.utcnow().isoformat(),usuario))
+        _registrar_movimiento_conn(conn,usuario,"regularizacion","unico",-deficit,reserva_id,f"{r['clave_idempotencia']}:regulariza","Regularización de exceso de consumo")
         conn.execute("UPDATE reservas_creditos SET deficit=0,estado='liquidado',actualizado=? WHERE id=?",(datetime.utcnow().isoformat(),reserva_id))
         return _saldo_creditos_conn(conn,usuario)
 
-def coste_creditos_desde_usd(coste_usd: float) -> int:
-    """Convierte coste Anthropic a créditos usando parámetros configurables."""
-    coste=max(0.0,float(coste_usd or 0))*CREDITOS_FACTOR_COSTE
-    return int(math.ceil(coste/CREDITOS_USD_POR_UNIDAD)) if coste else 0
+def aplicar_caducidades_creditos_pendientes() -> int:
+    """Aplica la caducidad global de todas las cuentas vencidas en una transacción."""
+    ahora = datetime.utcnow().isoformat()
+    procesadas = 0
+    with db() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        filas = conn.execute(
+            "SELECT usuario FROM cuentas_comerciales "
+            "WHERE creditos_caducidad IS NOT NULL AND creditos_caducidad <= ?",
+            (ahora,),
+        ).fetchall()
+        for fila in filas:
+            _aplicar_caducidad_creditos_conn(conn, fila["usuario"])
+            procesadas += 1
+    return procesadas
+
+
+async def bucle_caducidad_creditos():
+    """Revisa cada hora la fecha global; las operaciones también la comprueban en línea."""
+    while True:
+        try:
+            await asyncio.to_thread(aplicar_caducidades_creditos_pendientes)
+        except Exception as exc:
+            print(f"[créditos] Error al aplicar caducidades: {exc}")
+            traceback.print_exc()
+        await asyncio.sleep(3600)
+
+
+def tarifa_creditos_servicio(servicio_id: str, modelo: str) -> int:
+    """Devuelve la tarifa configurada, ajustada al coste relativo del modelo."""
+    with db() as conn:
+        fila=conn.execute("SELECT creditos,activo FROM tarifas_servicios WHERE servicio_id=?",(servicio_id,)).fetchone()
+    if not fila or not fila["activo"]:
+        raise HTTPException(status_code=503,detail=f"El servicio «{servicio_id}» no tiene una tarifa activa.")
+    base=int(fila["creditos"] or 0)
+    precio_base=PRECIOS_MODELO.get(MODEL_ESTANDAR,(1.0,5.0))
+    precio_modelo=PRECIOS_MODELO.get(modelo,precio_base)
+    factor=max(precio_modelo[0]/precio_base[0],precio_modelo[1]/precio_base[1])
+    return int(math.ceil(base*factor)) if base else 0
+
+
+def comprobar_creditos_servicio(usuario: str, servicio_id: str, modelo: str) -> int:
+    coste=tarifa_creditos_servicio(servicio_id,modelo)
+    if coste:
+        saldo=obtener_saldo_creditos(usuario)
+        if saldo["total"]<coste:
+            raise HTTPException(status_code=402,detail=f"No tienes créditos suficientes. Esta operación necesita {coste} créditos y tienes {saldo['total']} disponibles.")
+    return coste
+
+
+def llamar_a_claude_facturable(usuario: str, servicio_id: str, modelo: str,
+                                referencia=None, **kwargs):
+    """Ejecuta una llamada de IA cobrando la tarifa configurada por operación.
+
+    La reserva se realiza antes de llamar a Anthropic; si la API falla, se devuelve.
+    La tarifa se liquida al recibir respuesta, mientras uso_ia conserva el coste real.
+    """
+    coste=comprobar_creditos_servicio(usuario,servicio_id,modelo)
+    reserva=None
+    if coste:
+        reserva=reservar_creditos(usuario,servicio_id,coste,referencia=referencia)
+    try:
+        respuesta=llamar_a_claude(**kwargs)
+    except Exception:
+        if reserva:
+            try: liberar_reserva_creditos(reserva,"La llamada a la IA no se completó")
+            except Exception: traceback.print_exc()
+        raise
+    if reserva:
+        liquidar_reserva_creditos(reserva,coste)
+    return respuesta
 
 def resumen_comercial_usuario(usuario: str) -> dict:
     with db() as conn:
         saldo=_saldo_creditos_conn(conn,usuario)
         plan=conn.execute("SELECT nombre,creditos_mensuales,prestaciones_json FROM planes WHERE id=?",(saldo["plan"],)).fetchone()
-        movimientos=conn.execute("SELECT tipo,bolsa,cantidad,saldo_mensual_despues,saldo_adicional_despues,referencia,descripcion,creado FROM movimientos_creditos WHERE usuario=? ORDER BY id DESC LIMIT 30",(usuario,)).fetchall()
+        movimientos=conn.execute("SELECT tipo,bolsa,cantidad,referencia,descripcion,creado FROM movimientos_creditos WHERE usuario=? ORDER BY id DESC LIMIT 30",(usuario,)).fetchall()
         pendientes=conn.execute("SELECT COUNT(*) AS n FROM reservas_creditos WHERE usuario=? AND estado IN ('reservado','incidencia')",(usuario,)).fetchone()["n"]
     saldo.update({"nombre_plan":plan["nombre"] if plan else saldo["plan"],"cuota_mensual_configurada":int(plan["creditos_mensuales"] or 0) if plan else 0,"prestaciones":json.loads(plan["prestaciones_json"] or "{}") if plan else {},"reservas_pendientes":int(pendientes),"movimientos": [dict(x) for x in movimientos]})
     return saldo
@@ -1794,7 +1951,7 @@ def api_creditos(usuario: str = Depends(obtener_usuario_actual)):
 def api_creditos_movimientos(usuario: str = Depends(obtener_usuario_actual), limite: int = 50):
     limite=max(1,min(int(limite),200))
     with db() as conn:
-        rows=conn.execute("SELECT id,tipo,bolsa,cantidad,saldo_mensual_despues,saldo_adicional_despues,referencia,descripcion,creado FROM movimientos_creditos WHERE usuario=? ORDER BY id DESC LIMIT ?",(usuario,limite)).fetchall()
+        rows=conn.execute("SELECT id,tipo,bolsa,cantidad,referencia,descripcion,creado FROM movimientos_creditos WHERE usuario=? ORDER BY id DESC LIMIT ?",(usuario,limite)).fetchall()
     return {"movimientos":[dict(r) for r in rows]}
 
 class AdminComercialIn(BaseModel):
@@ -1813,7 +1970,7 @@ class GuardarTarifasIn(BaseModel):
 def admin_listar_tarifas(request: Request, payload: AdminComercialIn):
     requiere_admin(payload.admin_password)
     with db() as conn:
-        filas=conn.execute("SELECT servicio_id,nombre,descripcion,creditos,activo,fecha_actualizada FROM tarifas_servicios ORDER BY rowid").fetchall()
+        filas=conn.execute("SELECT servicio_id,nombre,descripcion,creditos,activo,configurada,fecha_actualizada FROM tarifas_servicios ORDER BY rowid").fetchall()
     return {"tarifas":[dict(x) for x in filas]}
 
 @app.post("/api/admin/comercial/tarifas/guardar")
@@ -1828,11 +1985,11 @@ def admin_guardar_tarifas(request: Request, payload: GuardarTarifasIn):
             if tarifa.servicio_id in vistos:
                 raise HTTPException(status_code=400,detail="Servicio repetido en la solicitud")
             vistos.add(tarifa.servicio_id)
-            cur=conn.execute("UPDATE tarifas_servicios SET creditos=?,fecha_actualizada=? WHERE servicio_id=?",
+            cur=conn.execute("UPDATE tarifas_servicios SET creditos=?,configurada=1,fecha_actualizada=? WHERE servicio_id=?",
                              (tarifa.creditos,ahora,tarifa.servicio_id))
             if cur.rowcount != 1:
                 raise HTTPException(status_code=404,detail=f"Servicio no encontrado: {tarifa.servicio_id}")
-        filas=conn.execute("SELECT servicio_id,nombre,descripcion,creditos,activo,fecha_actualizada FROM tarifas_servicios ORDER BY rowid").fetchall()
+        filas=conn.execute("SELECT servicio_id,nombre,descripcion,creditos,activo,configurada,fecha_actualizada FROM tarifas_servicios ORDER BY rowid").fetchall()
     return {"ok":True,"tarifas":[dict(x) for x in filas]}
 
 @app.post("/api/admin/comercial/usuarios")
@@ -1840,23 +1997,31 @@ def admin_guardar_tarifas(request: Request, payload: GuardarTarifasIn):
 def admin_comercial_usuarios(request: Request, payload: AdminComercialIn):
     requiere_admin(payload.admin_password)
     with db() as conn:
-        rows=conn.execute("""SELECT u.usuario,u.email,c.plan_id,c.estado,c.creditos_mensuales,c.creditos_adicionales,c.periodo_inicio,c.periodo_fin,c.actualizado
+        rows=conn.execute("""SELECT u.usuario,u.email,c.plan_id,c.estado,c.periodo_inicio,c.periodo_fin,c.actualizado
             FROM usuarios u LEFT JOIN cuentas_comerciales c ON c.usuario=u.usuario ORDER BY u.usuario""").fetchall()
-    return {"usuarios":[dict(r) for r in rows]}
+        usuarios=[]
+        for fila in rows:
+            dato=dict(fila)
+            try:
+                saldo=_saldo_creditos_conn(conn,dato["usuario"])
+                dato.update({"creditos_saldo":saldo["total"],"creditos_caducidad":saldo["caducidad"]})
+            except HTTPException:
+                dato.update({"creditos_saldo":0,"creditos_caducidad":None})
+            usuarios.append(dato)
+    return {"usuarios":usuarios}
 
 class AjusteCreditosIn(BaseModel):
     admin_password: str
     usuario: str
     cantidad: int = Field(..., ge=1, le=100000000)
-    bolsa: str = "adicionales"
+    bolsa: str = "unico"
     descripcion: str = Field(..., min_length=3, max_length=300)
 
 @app.post("/api/admin/comercial/ajustar-creditos")
 @limiter.limit("10/minute")
 def admin_ajustar_creditos(request: Request, payload: AjusteCreditosIn):
     requiere_admin(payload.admin_password)
-    if payload.bolsa not in {"mensuales","adicionales"}: raise HTTPException(status_code=400,detail="Bolsa no válida")
-    return conceder_creditos(payload.usuario,payload.cantidad,payload.bolsa,"ajuste_administrativo",descripcion=payload.descripcion)
+    return conceder_creditos(payload.usuario,payload.cantidad,"unico","ajuste_administrativo",descripcion=payload.descripcion)
 
 class CambiarPlanComercialIn(BaseModel):
     admin_password: str
@@ -1991,6 +2156,8 @@ def guardar_autopercepcion_endpoint(payload: AutopercepcionIn, usuario: str = De
 @limiter.limit("20/minute")
 def enviar_mensaje(request: Request, payload: MensajeIn, usuario: str = Depends(obtener_usuario_actual)):
     comprobar_limite_diario(usuario)
+    # Comprueba el saldo antes de crear una sesión vacía o preparar el contexto.
+    comprobar_creditos_servicio(usuario,"entrevista",obtener_modelo_usuario(usuario,"entrevista"))
     sesion_id, mensajes, fecha_inicio = obtener_o_crear_sesion(usuario, payload.sesion_id)
 
     turnos_reales = len([m for m in mensajes if m["role"] == "assistant"])
@@ -2038,8 +2205,10 @@ def enviar_mensaje(request: Request, payload: MensajeIn, usuario: str = Depends(
     mensajes.append({"role": "user", "content": payload.mensaje})
 
     _inicio = time.perf_counter()
-    respuesta = llamar_a_claude(
-        model=obtener_modelo_usuario(usuario, "entrevista"),
+    modelo_entrevista = obtener_modelo_usuario(usuario, "entrevista")
+    respuesta = llamar_a_claude_facturable(
+        usuario, "entrevista", modelo_entrevista, referencia=sesion_id,
+        model=modelo_entrevista,
         max_tokens=500,
         system=(SYSTEM_PROMPT_ENTREVISTA + "\n\nEstado de avisos de uso indebido de esta sesión: " + str(obtener_avisos_uso_indebido(sesion_id)) + ". El backend lleva el contador; no intentes deducirlo del historial."),
         messages=mensajes,
@@ -2088,8 +2257,11 @@ def construir_resumen_desde_transcripcion(usuario: str, resumen_previo: dict, tr
     normal, para fusionar una transcripción con el resumen de memoria previo.
     Se usa tanto al cerrar una sesión como al reconstruir la memoria completa
     a partir de sesiones antiguas."""
-    respuesta = llamar_a_claude(
-        model=obtener_modelo_usuario(usuario, "entrevista"),
+    modelo_resumen = obtener_modelo_usuario(usuario, "entrevista")
+    servicio_creditos = {"cierre_sesion":"cerrar_sesion", "reconstruccion":"reconstruir_recuerdos", "reprocesar_sesion":"reprocesar_sesion"}.get(operacion, "cerrar_sesion")
+    respuesta = llamar_a_claude_facturable(
+        usuario, servicio_creditos, modelo_resumen, referencia=referencia,
+        model=modelo_resumen,
         max_tokens=4000,
         system=SYSTEM_PROMPT_RESUMEN,
         tools=[HERRAMIENTA_RESUMEN],
@@ -2177,6 +2349,8 @@ def iniciar_reconstruccion_memoria(request: Request, usuario: str = Depends(obte
         vivo=any(t.name==f"reconstruccion-{job_id}" and t.is_alive() for t in threading.enumerate())
         if not vivo: _iniciar_hilo_reconstruccion(job_id,usuario,filas)
         return JSONResponse(status_code=202,content=_estado_publico_reconstruccion(dict(activa)))
+    modelo_reconstruccion=obtener_modelo_usuario(usuario,"entrevista")
+    comprobar_creditos_servicio(usuario,"reconstruir_recuerdos",modelo_reconstruccion)
     guardar_resumen(usuario,_memoria_solo_manuales(cargar_resumen(usuario)))
     guardar_estrategia_entrevista(usuario,{"hilos":[],"contradicciones":[],"hipotesis_pendientes":[]})
     job_id=_crear_reconstruccion(usuario,len(filas)); _iniciar_hilo_reconstruccion(job_id,usuario,filas)
@@ -2195,7 +2369,7 @@ def cancelar_reconstruccion_memoria(job_id:str,usuario:str=Depends(obtener_usuar
 def reanudar_reconstruccion_memoria(job_id:str,request:Request,usuario:str=Depends(obtener_usuario_actual)):
     row=_leer_reconstruccion_db(job_id)
     if not row or row["usuario"]!=usuario: raise HTTPException(status_code=404,detail="Reconstrucción no encontrada.")
-    if row["estado"] not in ("cancelado","error"): raise HTTPException(status_code=400,detail="Esta reconstrucción todavía está activa o ya ha terminado.")
+    if row["estado"] not in ("cancelado","error","sin_creditos"): raise HTTPException(status_code=400,detail="Esta reconstrucción todavía está activa o ya ha terminado.")
     with db() as conn: filas=conn.execute("SELECT id,mensajes FROM sesiones WHERE usuario=? AND (tipo IS NULL OR tipo='propia') ORDER BY fecha ASC,id ASC",(usuario,)).fetchall()
     job_nuevo=_crear_reconstruccion(usuario,len(filas),json.loads(row.get("procesadas_ids") or "[]"),row["procesadas"],row["omitidas"],json.loads(row.get("errores") or "[]")); _iniciar_hilo_reconstruccion(job_nuevo,usuario,filas)
     return JSONResponse(status_code=202,content={"job_id":job_nuevo,"estado":"pendiente","total":len(filas),"procesadas":row["procesadas"],"omitidas":row["omitidas"]})
@@ -2280,8 +2454,10 @@ def enviar_mensaje_aportacion(request: Request, payload: MensajeIn, usuario: str
     mensajes.append({"role": "user", "content": payload.mensaje})
 
     _inicio = time.perf_counter()
-    respuesta = llamar_a_claude(
-        model=obtener_modelo_usuario(usuario, "entrevista"),
+    modelo_entrevista = obtener_modelo_usuario(usuario, "entrevista")
+    respuesta = llamar_a_claude_facturable(
+        usuario, "aportacion_externa", modelo_entrevista, referencia=sesion_id,
+        model=modelo_entrevista,
         max_tokens=500,
         system=SYSTEM_PROMPT_APORTACION,
         messages=mensajes,
@@ -3108,8 +3284,10 @@ def previsualizar_autobiografia(payload: AutobiografiaPreviewIn, usuario: str = 
         raise HTTPException(status_code=400, detail="Tono no permitido")
     resumen = cargar_resumen(usuario)
     _comprobar_memoria_autobiografia(resumen)
-    respuesta = llamar_a_claude(
-        model=obtener_modelo_usuario(usuario, "autobiografia"),
+    modelo_autobiografia = obtener_modelo_usuario(usuario, "autobiografia")
+    respuesta = llamar_a_claude_facturable(
+        usuario, "autobiografia_indice", modelo_autobiografia,
+        model=modelo_autobiografia,
         max_tokens=1800,
         system=SYSTEM_PROMPT_AUTOBIOGRAFIA_INDICE,
         tools=[HERRAMIENTA_INDICE_AUTOBIOGRAFIA],
@@ -3168,8 +3346,10 @@ def generar_capitulo_autobiografia(capitulo_id: int, usuario: str = Depends(obte
         proyecto = conn.execute("SELECT tono FROM autobiografia_proyectos WHERE usuario=?", (usuario,)).fetchone()
     if not cap: raise HTTPException(status_code=404, detail="Capítulo no encontrado")
     tono = proyecto["tono"] if proyecto else "natural"
-    respuesta = llamar_a_claude(
-        model=obtener_modelo_usuario(usuario, "autobiografia"), max_tokens=3500,
+    modelo_autobiografia = obtener_modelo_usuario(usuario, "autobiografia")
+    respuesta = llamar_a_claude_facturable(
+        usuario, "autobiografia_capitulo", modelo_autobiografia, referencia=capitulo_id,
+        model=modelo_autobiografia, max_tokens=3500,
         system=SYSTEM_PROMPT_CAPITULO_AUTOBIOGRAFIA,
         messages=[{"role":"user", "content": f"Tono: {TONOS_AUTOBIOGRAFIA.get(tono, TONOS_AUTOBIOGRAFIA['natural'])}\n\nCapítulo: {cap['titulo']}\nEnfoque: {cap['enfoque']}\n\n{_datos_autobiografia(resumen)}"}],
         timeout=100.0,
@@ -3206,7 +3386,9 @@ def mejorar_capitulo_autobiografia(capitulo_id: int, payload: AccionCapituloIn, 
     with db() as conn:
         cap = conn.execute("SELECT * FROM autobiografia_capitulos WHERE id=? AND usuario=?", (capitulo_id, usuario)).fetchone()
     if not cap or not cap["contenido"]: raise HTTPException(status_code=400, detail="El capítulo todavía no tiene contenido")
-    respuesta = llamar_a_claude(model=obtener_modelo_usuario(usuario, "autobiografia"), max_tokens=3500,
+    modelo_autobiografia = obtener_modelo_usuario(usuario, "autobiografia")
+    respuesta = llamar_a_claude_facturable(usuario, "autobiografia_mejora", modelo_autobiografia,
+        referencia=capitulo_id, model=modelo_autobiografia, max_tokens=3500,
         system=SYSTEM_PROMPT_MEJORA_CAPITULO,
         messages=[{"role":"user", "content": f"Acción: {acciones[payload.accion]}\n\nTexto actual:\n{cap['contenido']}\n\nMemoria disponible:\n{_datos_autobiografia(cargar_resumen(usuario))}"}], timeout=100.0)
     contenido = next((b.text for b in respuesta.content if getattr(b,"type",None)=="text"), "").strip()
@@ -3238,7 +3420,9 @@ Reglas:
 - Conserva los capítulos mediante encabezados Markdown ##.
 - No añadas comentarios sobre el proceso ni una introducción dirigida al usuario.
 """
-    respuesta=llamar_a_claude(model=obtener_modelo_usuario(usuario,"autobiografia"),max_tokens=10000,system=system,messages=[{"role":"user","content":f"Tono: {tono}\n\n{material}"}],timeout=180.0)
+    modelo_autobiografia=obtener_modelo_usuario(usuario,"autobiografia")
+    respuesta=llamar_a_claude_facturable(usuario,"autobiografia_completa",modelo_autobiografia,
+        model=modelo_autobiografia,max_tokens=10000,system=system,messages=[{"role":"user","content":f"Tono: {tono}\n\n{material}"}],timeout=180.0)
     contenido=next((b.text for b in respuesta.content if getattr(b,"type",None)=="text"),"").strip(); fecha=datetime.utcnow().isoformat(); modelo=obtener_modelo_usuario(usuario,"autobiografia")
     with db() as conn: conn.execute("INSERT INTO autobiografia (usuario,contenido,fecha_generada,tokens_input,tokens_output,modelo) VALUES (?,?,?,?,?,?) ON CONFLICT(usuario) DO UPDATE SET contenido=excluded.contenido,fecha_generada=excluded.fecha_generada,tokens_input=autobiografia.tokens_input+excluded.tokens_input,tokens_output=autobiografia.tokens_output+excluded.tokens_output,modelo=excluded.modelo",(usuario,contenido,fecha,respuesta.usage.input_tokens,respuesta.usage.output_tokens,modelo))
     registrar_uso_diario(usuario,respuesta.usage.input_tokens,respuesta.usage.output_tokens, es_mensaje_conversacion=False)
@@ -3250,7 +3434,9 @@ def generar_autobiografia(usuario: str = Depends(obtener_usuario_actual)):
     """Compatibilidad con la versión anterior: genera una autobiografía completa de una vez."""
     resumen = cargar_resumen(usuario)
     _comprobar_memoria_autobiografia(resumen)
-    respuesta = llamar_a_claude(model=obtener_modelo_usuario(usuario, "autobiografia"), max_tokens=8000,
+    modelo_autobiografia = obtener_modelo_usuario(usuario, "autobiografia")
+    respuesta = llamar_a_claude_facturable(usuario, "autobiografia_completa", modelo_autobiografia,
+        model=modelo_autobiografia, max_tokens=8000,
         system=SYSTEM_PROMPT_AUTOBIOGRAFIA,
         messages=[{"role":"user", "content": _datos_autobiografia(resumen)}], timeout=150.0)
     contenido = next((b.text for b in respuesta.content if getattr(b,"type",None)=="text"), "").strip(); fecha=datetime.utcnow().isoformat(); modelo=obtener_modelo_usuario(usuario,"autobiografia")

@@ -1,107 +1,85 @@
-# Memoricorde — sistema interno de créditos (fase previa a Stripe)
+# Memoricorde — sistema de créditos (fase previa a Stripe)
 
 Fecha: 2 de noviembre de 2026
 
-## Alcance de esta entrega
+## Política de créditos
 
-Esta versión incorpora la estructura comercial y el motor interno de créditos, pero no conecta todavía Stripe ni descuenta créditos automáticamente de las llamadas de IA. Las operaciones actuales de entrevista, recuerdos y autobiografía siguen funcionando como antes. Esta separación es deliberada: primero se valida el libro contable y la migración; después se conectará cada operación de IA y, en una fase posterior, los pagos.
+- Cada usuario tiene un único saldo entero (`creditos_saldo`) y una única fecha global (`creditos_caducidad`). No hay bolsas separadas por origen.
+- Cualquier concesión positiva —compra futura, ajuste administrativo, promoción o cuota de plan— se suma al saldo y renueva la fecha global a `ahora + CREDITOS_DIAS_CADUCIDAD` (365 días por defecto).
+- La nueva fecha se aplica a todo el saldo acumulado. Ejemplo: 700 créditos existentes + compra de 500 = 1.200 créditos y una nueva fecha global de caducidad.
+- Al alcanzar la fecha, caduca el saldo completo. Un proceso de fondo lo revisa cada hora y cada consulta/reserva también comprueba la caducidad para impedir el uso de créditos vencidos.
+- Las cuentas que ya tenían saldo en las dos antiguas bolsas se migran sumando ambas cantidades. Se asigna una fecha global inicial de 365 días al saldo migrado.
 
-## Política de cuentas
+## Concesión, consumo y fallos
 
-- Las cuentas que ya existían al ejecutar por primera vez la migración reciben el plan `legacy` y conservan sus modelos existentes.
-- Los nuevos registros públicos reciben el plan `free` y el modelo estándar fijado por el servidor. Los modelos enviados por el navegador se ignoran.
-- Las cuentas creadas desde `/admin.html` también reciben `free`.
-- Los planes disponibles en la base de datos son `free`, `premium` y `legacy`.
-- La cuota gratuita y Premium se configuran mediante variables de entorno. Ambas quedan a cero por defecto hasta decidir cantidades comerciales.
+- La administración puede conceder créditos desde `/admin.html`; la operación registra motivo, movimiento y nueva fecha de caducidad.
+- `conceder_creditos()` es la función que deberá invocar el futuro webhook de Stripe cuando un pago quede confirmado. Admite una clave de idempotencia para impedir conceder dos veces los créditos de un mismo pago.
+- Antes de cada llamada de IA, el servidor reserva la tarifa configurada en una transacción SQLite `BEGIN IMMEDIATE`. Si el saldo es insuficiente, devuelve HTTP 402 y no llama a Anthropic.
+- Si la llamada a Anthropic falla, la reserva se libera. Si la API responde, se liquida la tarifa. El coste real de Anthropic se registra separadamente en `uso_ia`.
+- Las reservas abandonadas tienen una expiración de seguridad de 120 minutos y se liberan si los créditos siguen vigentes.
+- En una reconstrucción global, se cobra por cada conversación procesada. Si se agota el saldo, el proceso se detiene en estado `sin_creditos`, conserva el progreso y puede reanudarse después de conceder más créditos.
+- Las operaciones manuales que no llaman a la IA (editar un recuerdo, editar texto, exportar datos, etc.) no consumen créditos.
 
-## Tablas añadidas
+## Tarifas iniciales orientativas
 
-- `planes`: definición de las modalidades y sus límites.
-- `cuentas_comerciales`: plan, estado, bolsas de créditos y periodo vigente.
-- `suscripciones`: historial y estado de suscripciones (preparada para el proveedor futuro).
-- `pagos`: registro de pagos y recargas (preparada para el proveedor futuro).
-- `movimientos_creditos`: libro de movimientos, con saldos posteriores a cada movimiento.
-- `reservas_creditos`: reservas, liquidaciones, liberaciones y posibles déficits.
-- `eventos_pago`: identificadores de eventos del proveedor para futura idempotencia de webhooks.
+Se usa como hipótesis de trabajo un valor interno de referencia de **1 crédito ≈ 0,01 €**. No es todavía un precio de venta aprobado ni sustituye la decisión posterior sobre paquetes. Las tarifas están pensadas para cubrir el coste de API con un margen prudente; son importes fijos por operación, por lo que deben revisarse con los consumos reales de `uso_ia`.
 
-Las tablas se crean mediante `CREATE TABLE IF NOT EXISTS`. La migración no elimina ni modifica las tablas biográficas existentes.
+| Operación | Haiku 4.5 | Sonnet 4.6 |
+|---|---:|---:|
+| Turno de entrevista | 5 | 15 |
+| Turno de aportación externa | 5 | 15 |
+| Cerrar sesión y actualizar recuerdos | 15 | 45 |
+| Reprocesar una sesión | 15 | 45 |
+| Reconstruir recuerdos | 15 por conversación | 45 por conversación |
+| Proponer estructura autobiográfica | 15 | 45 |
+| Generar un capítulo | 25 | 75 |
+| Mejorar un capítulo | 15 | 45 |
+| Generar autobiografía completa | 80 | 240 |
 
-## Motor interno
+Sonnet 4.6 aplica un factor ×3 porque su precio estándar de API es tres veces el de Haiku 4.5 tanto en entrada como en salida. La tabla es editable desde `admin.html`; el importe que se edita es la tarifa base Haiku y el servidor aplica el factor del modelo asignado.
 
-Funciones disponibles en `main.py`:
+## Cobertura de operaciones de IA
 
-- `obtener_saldo_creditos(usuario)`
-- `conceder_creditos(usuario, cantidad, bolsa, ...)`
-- `renovar_creditos_mensuales(usuario, periodo_inicio, periodo_fin, ...)`
-- `reservar_creditos(usuario, operacion, cantidad, ...)`
-- `liquidar_reserva_creditos(reserva_id, coste_real)`
-- `liberar_reserva_creditos(reserva_id, motivo)`
-- `regularizar_incidencia_creditos(reserva_id)`
-- `coste_creditos_desde_usd(coste_usd)`
+Todas las llamadas de la aplicación a Anthropic se realizan mediante `llamar_a_claude_facturable`:
 
-Reglas: se consumen primero los créditos mensuales y después los adicionales; las renovaciones extinguen únicamente el saldo mensual anterior; los adicionales no caducan; las reservas y movimientos se procesan en transacciones SQLite; las claves de idempotencia evitan duplicar concesiones y reservas. Si el coste real supera la reserva y no existe saldo para cubrirlo, queda registrada una incidencia y se bloquean nuevas reservas hasta regularizarla.
+- Entrevista con Lira.
+- Aportaciones externas.
+- Cierre de sesión y actualización de recuerdos.
+- Reprocesamiento de una sesión cerrada.
+- Reconstrucción global, por conversación procesada.
+- Propuesta/previsualización de estructura autobiográfica.
+- Generación de capítulos.
+- Mejora de capítulos.
+- Generación/unificación de autobiografía completa.
 
-## Endpoints incorporados
+El saldo y el historial se muestran en Cuenta. El saldo resumido también aparece en la cabecera y se actualiza tras operaciones facturables.
+
+## Tablas y endpoints
+
+Tablas comerciales: `planes`, `cuentas_comerciales`, `suscripciones`, `pagos`, `movimientos_creditos`, `reservas_creditos`, `eventos_pago` y `tarifas_servicios`.
 
 Usuario autenticado:
+- `GET /api/creditos`: plan, saldo, caducidad global, movimientos recientes.
+- `GET /api/creditos/movimientos?limite=50`: historial.
 
-- `GET /api/creditos`: plan, saldo, reservas pendientes y últimos movimientos.
-- `GET /api/creditos/movimientos?limite=50`: historial paginado por límite (máximo 200).
+Administración (requiere `admin_password`):
+- `POST /api/admin/comercial/usuarios`: saldos y caducidad de las cuentas.
+- `POST /api/admin/comercial/ajustar-creditos`: concede créditos al saldo único.
+- `POST /api/admin/comercial/cambiar-plan`: cambia el plan.
+- `POST /api/admin/comercial/tarifas`: consulta tarifas.
+- `POST /api/admin/comercial/tarifas/guardar`: guarda tarifas.
+- `POST /api/admin/comercial/regularizar-incidencia`: regulariza un déficit excepcional.
 
-Administración (requieren `admin_password`):
-
-- `POST /api/admin/comercial/usuarios`: lista de usuarios y sus saldos.
-- `POST /api/admin/comercial/ajustar-creditos`: concesión manual de créditos con motivo obligatorio.
-- `POST /api/admin/comercial/cambiar-plan`: cambio manual de plan y apertura de un nuevo periodo de 30 días con la cuota configurada.
-- `POST /api/admin/comercial/regularizar-incidencia`: regulariza un déficit si ya existe saldo suficiente.
-
-El panel `/admin.html` incluye consulta de cuentas comerciales, cambio de plan y concesión manual de créditos. La sección Cuenta de `/app.html` muestra el plan, los saldos y los últimos movimientos.
-
-## Variables de entorno nuevas
+## Variables de entorno
 
 ```ini
 CREDITOS_GRATUITOS_MENSUALES=0
 CREDITOS_PREMIUM_MENSUALES=0
-CREDITOS_FACTOR_COSTE=1.0
-CREDITOS_USD_POR_UNIDAD=0.01
+CREDITOS_DIAS_CADUCIDAD=365
 ```
 
-La conversión de coste estimado de Anthropic a créditos es configurable. No deben fijarse cuotas ni valor económico definitivo hasta analizar los costes históricos de `uso_ia` y decidir precios y márgenes.
+Las cuotas de plan siguen en cero por defecto. La compra en línea, Stripe Checkout, Billing y webhooks no están incluidos todavía. Hasta integrar Stripe, los créditos se conceden desde administración para probar el circuito.
 
-## Lo que queda expresamente para la siguiente fase
+## Pruebas
 
-1. Integrar reservas y liquidaciones en cada llamada de IA (entrevista, cierre, aportaciones, reconstrucción, reprocesamiento y autobiografía).
-2. Definir cuotas, límites y reglas comerciales definitivas.
-3. Incorporar la renovación periódica automática de la cuota gratuita y la recuperación de reservas expiradas.
-4. Integrar Stripe Checkout, Billing y webhooks firmados e idempotentes.
-5. Definir la política fiscal, de reembolsos y retención de documentos de facturación.
-
-## Pruebas realizadas en esta entrega
-
-- Compilación sintáctica de `main.py` con `py_compile`.
-- Validación de sintaxis JavaScript de `app.html`, `registro.html` y `admin.html` con Node.js.
-- Ejecución de las sentencias DDL de las siete tablas comerciales sobre SQLite.
-- Pruebas aisladas del motor de créditos: concesión, reserva mensual-primero, liquidación con devolución a la bolsa correcta, renovación idempotente, liberación, rechazo por saldo insuficiente, incidencia por exceso y regularización.
-
-No se ha podido ejecutar una prueba de extremo a extremo del servidor FastAPI en este entorno porque no están instaladas aquí las dependencias de producción `sqlcipher3-binary`, `anthropic`, `bcrypt` y `slowapi`. Por tanto, antes de producción debe hacerse una prueba de arranque con `requirements.txt` y una copia de la base de datos real.
-
-## Despliegue seguro
-
-1. Descargar un backup completo de la base de datos cifrada de Railway.
-2. Conservar el ZIP de la versión anterior.
-3. Desplegar esta versión sin sustituir el volumen ni copiar una base local sobre producción.
-4. Revisar los logs y comprobar que la aplicación arranca.
-5. Verificar que los usuarios existentes aparecen como `legacy` y mantienen sus recuerdos, sesiones y modelos.
-6. Crear una cuenta de prueba y comprobar que aparece como `free`.
-7. Revisar `/api/creditos` y el apartado Cuenta.
-8. No activar todavía cobros ni consumo automático de créditos.
-
-## Tarifas configurables por servicio (2026-11-02, ampliación)
-
-Se incorpora la tabla `tarifas_servicios`, editable desde `admin.html`, para configurar el número de créditos de cada operación. Los servicios iniciales son reconstruir recuerdos, reprocesar una sesión, procesar el cierre de sesión, proponer la estructura de autobiografía, generar un capítulo, mejorar un capítulo y generar la autobiografía completa. Los importes se inicializan a cero deliberadamente: el administrador debe fijarlos según el coste real y el margen comercial deseado.
-
-Endpoints administrativos (requieren `admin_password`):
-- `POST /api/admin/comercial/tarifas`: consulta el catálogo y sus importes.
-- `POST /api/admin/comercial/tarifas/guardar`: guarda los importes enviados; admite cero para dejar un servicio sin coste.
-
-**Alcance:** esta ampliación guarda y permite editar las tarifas, pero todavía no conecta esas tarifas con reservas y liquidaciones automáticas en las rutas de IA. Por tanto, cambiar un importe en la tabla no empieza a descontar créditos a los usuarios. Esa conexión debe hacerse en una fase posterior, operación por operación, incluyendo tratamiento de errores y liquidación según el consumo real cuando proceda.
+Consultar `PRUEBAS_CREDITOS.md`. Se han realizado comprobaciones estáticas y pruebas aisladas del motor; no se ha podido ejecutar en este entorno una prueba de arranque completa con SQLCipher, Anthropic y el resto de dependencias de producción. Antes de actualizar Railway, hacer backup cifrado y prueba de arranque con `requirements.txt` y una copia de la base de datos.

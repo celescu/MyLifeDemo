@@ -199,3 +199,12 @@ Comprobaciones previstas: sintaxis Python/JavaScript, búsqueda de referencias d
 - Añadida sección «Coste de los servicios» en admin.html con edición de créditos por operación.
 - Añadidos endpoints administrativos para consultar y guardar tarifas.
 - Los valores iniciales son cero; el descuento automático de créditos aún no está conectado a las operaciones IA.
+
+2026-11-02 — Saldo único de créditos, caducidad global renovable con cada concesión, tarifas iniciales por servicio y descuento automático previo a todas las llamadas de IA. Bloqueo por saldo insuficiente y reconstrucción reanudable al agotarse el saldo.
+
+
+2026-11-02 — Revisión de tarifas y caducidad automática
+- Ajustadas las tarifas iniciales con una hipótesis de cálculo de 0,01 € por crédito y factor Sonnet ×3.
+- Añadido barrido de caducidades globales cada hora, además de la comprobación en cada consulta y consumo.
+- Añadido indicador de saldo en la cabecera de la aplicación, actualizado tras operaciones facturables.
+- Actualizadas documentación y pruebas manuales. Stripe sigue pendiente.

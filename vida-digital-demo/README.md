@@ -295,22 +295,18 @@ La memoria estructurada puede editarse desde «Mis recuerdos». Las correcciones
 
 ## Sistema interno de créditos (fase previa a Stripe)
 
-Esta versión incorpora las tablas comerciales y el motor interno de créditos,
-pero todavía NO integra Stripe ni descuenta créditos automáticamente de las
-operaciones de IA. La aplicación conserva el comportamiento funcional actual
-hasta completar la integración y las pruebas de consumo en una fase posterior.
+Memoricorde usa un único saldo y una única fecha de caducidad global por usuario. Cualquier compra futura, concesión administrativa, promoción o cuota de plan se suma al saldo y renueva la fecha de todo el saldo a 365 días desde la nueva concesión (configurable mediante `CREDITOS_DIAS_CADUCIDAD`). La caducidad se aplica en segundo plano cada hora y también antes de consultar o gastar créditos.
 
-- Las cuentas que ya existían al ejecutar la migración se clasifican como `legacy`.
-- Los nuevos registros y las cuentas creadas desde administración se clasifican como `free`.
-- Se mantienen bolsas independientes de créditos mensuales y adicionales.
-- Hay funciones transaccionales para conceder, reservar, liquidar y liberar créditos.
-- Se exponen `/api/creditos` y `/api/creditos/movimientos` para la cuenta autenticada.
-- El administrador puede consultar usuarios comerciales, asignar créditos y cambiar planes.
-- Los valores de cuota están a cero por defecto hasta decidir precios y cantidades.
+- Las cuentas existentes se migran sumando las antiguas bolsas mensual y adicional; no se eliminan recuerdos, sesiones ni autobiografías.
+- Cada operación de IA reserva créditos antes de llamar a Anthropic. Si no hay saldo suficiente, la llamada no se ejecuta y la interfaz muestra el aviso devuelto por el servidor.
+- Si Anthropic falla, la reserva se libera; si responde, se liquida la tarifa configurada.
+- La reconstrucción de recuerdos cobra por cada conversación procesada; si el saldo se agota, se detiene conservando el progreso y puede reanudarse después de añadir créditos.
+- El coste real estimado de Anthropic sigue registrándose en `uso_ia`, separado de la tarifa en créditos.
+- Las tarifas iniciales son editables desde `admin.html`. Haiku 4.5 es la base y Sonnet 4.6 aplica un factor ×3.
+- Stripe, Checkout y webhooks todavía no están integrados; para probar el circuito, el administrador concede créditos desde el panel.
 
-Variables nuevas: `CREDITOS_GRATUITOS_MENSUALES`, `CREDITOS_PREMIUM_MENSUALES`,
-`CREDITOS_FACTOR_COSTE` y `CREDITOS_USD_POR_UNIDAD`.
+Tarifas iniciales recomendadas (Haiku 4.5 / Sonnet 4.6): entrevista 5/15; aportación 5/15; cierre de sesión 15/45; reprocesar 15/45; reconstrucción 15/45 por conversación; estructura autobiográfica 15/45; capítulo 25/75; mejora 15/45; autobiografía completa 80/240. Se ha utilizado como referencia de cálculo 1 crédito ≈ 0,01 €, no como precio definitivo del paquete. Los importes deben revisarse con los datos reales de `uso_ia`.
 
-Antes de desplegar, realiza un backup de la base de datos. La migración añade
-tablas y clasifica las cuentas existentes como `legacy`; no modifica recuerdos,
-sesiones, autobiografías ni registros históricos de `uso_ia`.
+Variables relevantes: `CREDITOS_GRATUITOS_MENSUALES`, `CREDITOS_PREMIUM_MENSUALES` y `CREDITOS_DIAS_CADUCIDAD` (365 por defecto).
+
+Antes de desplegar, realiza un backup de la base de datos. La migración añade tablas/columnas comerciales y clasifica las cuentas existentes como `legacy`; no modifica recuerdos, sesiones, autobiografías ni registros históricos de `uso_ia`.
