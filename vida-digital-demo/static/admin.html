@@ -95,6 +95,15 @@
     <p class="resultado" id="resultado-ajuste-creditos"></p>
   </div>
 
+  <h2>Coste de los servicios</h2>
+  <div class="caja">
+    <p class="aviso">Define cuántos créditos consume cada operación. Los valores iniciales son cero para que establezcas tus tarifas antes de activar el cobro. Esta tabla guarda la configuración; todavía no conecta automáticamente el descuento con las operaciones de IA.</p>
+    <button onclick="cargarTarifas()">Cargar tarifas</button>
+    <div id="tabla-tarifas" style="overflow-x:auto;margin-top:12px;"></div>
+    <button onclick="guardarTarifas()">Guardar costes de los servicios</button>
+    <p class="resultado" id="resultado-tarifas"></p>
+  </div>
+
   <h2>Backup individual (un usuario)</h2>
   <div class="caja">
     <p class="aviso">Usa el usuario seleccionado arriba en "Usuarios existentes".</p>
@@ -252,6 +261,31 @@ async function ajustarCreditos() {
     const d=await r.json(); if(!r.ok)throw new Error(formatearDetalle(d));
     mostrar('resultado-ajuste-creditos',`Créditos concedidos. Saldo mensual: ${d.mensuales}; adicionales: ${d.adicionales}.`,false); cargarComercial();
   } catch(e) { mostrar('resultado-ajuste-creditos',e.message||'No se pudieron conceder créditos.',true); }
+}
+
+let tarifasAdmin = [];
+async function cargarTarifas() {
+  try {
+    const r=await fetch('/api/admin/comercial/tarifas',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify({admin_password:passwordAdmin()})});
+    const d=await r.json(); if(!r.ok)throw new Error(formatearDetalle(d));
+    tarifasAdmin=d.tarifas||[];
+    document.getElementById('tabla-tarifas').innerHTML=tarifasAdmin.length?`<table style="width:100%;border-collapse:collapse;font:12px system-ui,sans-serif;"><thead><tr><th align="left">Servicio</th><th align="left">Descripción</th><th align="right">Créditos</th></tr></thead><tbody>${tarifasAdmin.map((t,i)=>`<tr><td style="padding:8px 4px;white-space:nowrap;">${escaparComercial(t.nombre)}</td><td style="padding:8px 4px;">${escaparComercial(t.descripcion)}</td><td style="padding:8px 4px;width:100px;"><input type="number" min="0" max="100000000" step="1" value="${Number(t.creditos||0)}" data-tarifa-index="${i}" style="width:90px;margin:0;text-align:right;"></td></tr>`).join('')}</tbody></table>`:'No hay servicios configurados.';
+    mostrar('resultado-tarifas',`${tarifasAdmin.length} servicios cargados.`,false);
+  } catch(e) { mostrar('resultado-tarifas',e.message||'No se pudieron cargar las tarifas.',true); }
+}
+async function guardarTarifas() {
+  if(!tarifasAdmin.length){mostrar('resultado-tarifas','Carga primero las tarifas.',true);return;}
+  const tarifas=[];
+  for(let i=0;i<tarifasAdmin.length;i++){
+    const input=document.querySelector(`[data-tarifa-index="${i}"]`),creditos=Number(input?.value);
+    if(!Number.isInteger(creditos)||creditos<0||creditos>100000000){mostrar('resultado-tarifas',`Valor no válido para «${tarifasAdmin[i].nombre}».`,true);return;}
+    tarifas.push({servicio_id:tarifasAdmin[i].servicio_id,creditos});
+  }
+  try{
+    const r=await fetch('/api/admin/comercial/tarifas/guardar',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify({admin_password:passwordAdmin(),tarifas})});
+    const d=await r.json();if(!r.ok)throw new Error(formatearDetalle(d));
+    tarifasAdmin=d.tarifas||tarifasAdmin;mostrar('resultado-tarifas','Tarifas guardadas correctamente.',false);cargarTarifas();
+  }catch(e){mostrar('resultado-tarifas',e.message||'No se pudieron guardar las tarifas.',true);}
 }
 
 async function exportarUsuarioIndividual() {
