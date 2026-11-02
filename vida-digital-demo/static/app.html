@@ -324,6 +324,7 @@
         <div class="entrevista-meta">
           <span class="fecha">Cuaderno de vida</span>
           <span id="usuario-conectado" class="usuario"></span>
+          <span id="creditos-cabecera" class="usuario" title="Saldo de créditos disponible">Créditos: —</span>
         </div>
         <h1 class="entrevista-titulo">Una conversación más de tu historia</h1>
         <div class="regla"></div>
@@ -455,7 +456,7 @@
         <p id="estado-plan-creditos">Cargando información comercial…</p>
         <div id="resumen-creditos" style="font-family:system-ui,sans-serif;font-size:.9rem;"></div>
         <div id="historial-creditos" style="font-family:system-ui,sans-serif;font-size:.82rem;margin-top:12px;"></div>
-        <p style="font-size:.8rem;color:var(--tinta-suave);margin-top:12px;">La gestión interna de créditos está preparada. Las compras, suscripciones y el descuento automático de operaciones se activarán en la siguiente fase, al integrar la pasarela de pago.</p>
+        <p style="font-size:.8rem;color:var(--tinta-suave);margin-top:12px;">Las operaciones de IA descuentan créditos automáticamente. Todos los créditos comparten una fecha de caducidad; cada nueva concesión o compra renueva esa fecha para el saldo completo. Las compras en línea se habilitarán al integrar la pasarela de pago.</p>
       </div>
 
       <div class="seccion-datos">
@@ -566,12 +567,34 @@ document.addEventListener('click', (event) => {
 });
 
 
+async function actualizarIndicadorCreditos() {
+  try {
+    const resp = await fetch('/api/creditos', { credentials: 'same-origin' });
+    if (!resp.ok) return;
+    const datos = await resp.json();
+    const el = document.getElementById('creditos-cabecera');
+    if (!el) return;
+    el.textContent = `Créditos: ${Number(datos.total || 0).toLocaleString('es-ES')}`;
+    el.title = datos.caducidad
+      ? `Todos los créditos caducan el ${new Date(datos.caducidad + 'Z').toLocaleDateString('es-ES')}`
+      : 'No hay una fecha de caducidad activa.';
+  } catch (_) { /* El indicador no debe interrumpir la aplicación. */ }
+}
+
 async function apiFetch(url, opts = {}) {
   const resp = await fetch(url, { ...opts, credentials: 'same-origin' });
   if (resp.status === 401) {
     window.location.href = '/login.html';
     throw new Error('No autenticado, redirigiendo a login');
   }
+  const metodo = String(opts.method || 'GET').toUpperCase();
+  const facturable = metodo === 'POST' && (
+    url === '/api/mensaje' || url === '/api/aportacion/mensaje' ||
+    url === '/api/cerrar_sesion' || url === '/api/reconstruir_memoria' ||
+    url === '/api/autobiografia/previsualizar' || url === '/api/autobiografia/generar-completa' ||
+    /\/reprocesar$/.test(url) || /\/capitulos\/\d+\/(generar|mejorar)$/.test(url)
+  );
+  if (facturable && (resp.ok || resp.status === 402)) void actualizarIndicadorCreditos();
   return resp;
 }
 
@@ -588,6 +611,7 @@ async function comprobarSesion() {
     const resp = await apiFetch('/api/whoami');
     const data = await resp.json();
     document.getElementById('usuario-conectado').textContent = `Conectado como: ${data.usuario}`;
+    actualizarIndicadorCreditos();
   } catch (e) {
     // apiFetch ya redirige a /login.html si no está autenticado
   }
@@ -756,6 +780,7 @@ async function enviar(modoSorpresa = false) {
       body: JSON.stringify({ mensaje: texto, sesion_id: sesionId, modo_sorpresa: modoSorpresa })
     });
     const data = await resp.json();
+    if (!resp.ok) throw new Error(data.detail || 'No se ha podido completar la operación.');
     sesionId = data.sesion_id;
     if (sesionInicioMs === null) iniciarReloj(data.fecha_inicio);
     quitarEscribiendo();
@@ -774,7 +799,7 @@ async function enviar(modoSorpresa = false) {
   } catch (e) {
     quitarEscribiendo();
     input.value = texto;
-    alert('Hubo un problema al enviar el mensaje. El texto se ha conservado para que puedas intentarlo de nuevo.');
+    alert(e.message || 'Hubo un problema al enviar el mensaje. El texto se ha conservado para que puedas intentarlo de nuevo.');
   } finally {
     if (!mantenerBloqueado) {
       btn.disabled = false;
@@ -898,6 +923,7 @@ async function cerrarSesionPorId(id, btn) {
       body: JSON.stringify({ sesion_id: id })
     });
     const data = await resp.json();
+    if (!resp.ok) throw new Error(data.detail || 'No tienes créditos suficientes para cerrar la sesión.');
     if (data.error) {
       alert('Aviso: ' + data.error);
       btn.disabled = false;
@@ -908,7 +934,7 @@ async function cerrarSesionPorId(id, btn) {
     if (sesionId === id) { sesionId = null; detenerReloj(); }
     await refrescarListaSesiones();
   } catch (e) {
-    alert('Hubo un problema al cerrar la sesión.');
+    alert(e.message || 'Hubo un problema al cerrar la sesión.');
     btn.disabled = false;
     btn.textContent = textoOriginal;
   }
@@ -933,8 +959,9 @@ async function cerrarSesion(ev) {
       body: JSON.stringify({ sesion_id: sesionId })
     });
     const data = await resp.json();
+    if (!resp.ok) throw new Error(data.detail || 'No tienes créditos suficientes para cerrar la sesión.');
     if (data.error) {
-      alert('Aviso: ' + data.error + '. Tu conversación no se ha perdido, pero el resumen no se actualizó esta vez. Revísalo con el desarrollador.');
+      alert('Aviso: ' + data.error + '. Tu conversación no se ha perdido, pero el resumen no se actualizó esta vez.');
       return;
     }
     alert('Sesión cerrada y memoria actualizada. Puedes cerrar la pestaña y volver otro día.');
@@ -942,7 +969,7 @@ async function cerrarSesion(ev) {
     detenerReloj();
     document.getElementById('chat').innerHTML = '';
   } catch (e) {
-    alert('Hubo un problema al cerrar la sesión. Inténtalo de nuevo.');
+    alert(e.message || 'Hubo un problema al cerrar la sesión. Inténtalo de nuevo.');
   } finally {
     btn.disabled = false;
     btn.textContent = textoOriginal;
@@ -1263,7 +1290,7 @@ function cerrarModalReconstruccion(){if(reconstruccionTerminado)document.getElem
 async function cancelarReconstruccionActual(){if(!reconstruccionJobId||reconstruccionTerminado)return;const b=document.getElementById('btn-cancelar-reconstruccion');b.disabled=true;try{const r=await apiFetch(`/api/reconstruir_memoria/${encodeURIComponent(reconstruccionJobId)}/cancelar`,{method:'POST'});const d=await r.json();if(!r.ok)throw new Error(d.detail||'No se pudo cancelar.');document.getElementById('reconstruccion-detalle').textContent=d.mensaje||'Cancelando…';}catch(e){alert(e.message||'No se pudo cancelar.');b.disabled=false;}}
 async function reanudarReconstruccionActual(){if(!reconstruccionJobId)return;document.getElementById('btn-reanudar-reconstruccion').style.display='none';document.getElementById('btn-cerrar-reconstruccion').style.display='none';document.getElementById('btn-cancelar-reconstruccion').style.display='inline-block';reconstruccionTerminado=false;try{const r=await apiFetch(`/api/reconstruir_memoria/${encodeURIComponent(reconstruccionJobId)}/reanudar`,{method:'POST'});const d=await r.json();if(!r.ok)throw new Error(d.detail||'No se pudo reanudar.');reconstruccionJobId=d.job_id;reconstruccionInicio=Date.now();await vigilarReconstruccion();}catch(e){document.getElementById('reconstruccion-detalle').textContent=e.message||'No se pudo reanudar.';document.getElementById('btn-cerrar-reconstruccion').style.display='inline-block';}}
 async function vigilarReconstruccion(){const estado=document.getElementById('reconstruccion-estado'),detalle=document.getElementById('reconstruccion-detalle'),progreso=document.getElementById('reconstruccion-progreso'),tiempo=document.getElementById('reconstruccion-tiempo'),resultado=document.getElementById('reconstruccion-resultado'),bc=document.getElementById('btn-cancelar-reconstruccion'),br=document.getElementById('btn-reanudar-reconstruccion'),bx=document.getElementById('btn-cerrar-reconstruccion');if(reconstruccionTemporizador)clearInterval(reconstruccionTemporizador);reconstruccionTemporizador=setInterval(()=>{const x=Math.floor((Date.now()-reconstruccionInicio)/1000);tiempo.textContent=`Tiempo transcurrido: ${String(Math.floor(x/60)).padStart(2,'0')}:${String(x%60).padStart(2,'0')}`},1000);
-while(!reconstruccionTerminado){await new Promise(r=>setTimeout(r,1000));const r=await apiFetch(`/api/reconstruir_memoria/${encodeURIComponent(reconstruccionJobId)}`),d=await r.json();if(!r.ok)throw new Error(d.detail||'No se pudo consultar el progreso.');const total=+d.total||0,pr=+d.procesadas||0,om=+d.omitidas||0,er=Array.isArray(d.errores)?d.errores:[],done=pr+om;progreso.style.width=`${total?Math.min(100,done/total*100):100}%`;if(d.estado==='pendiente')estado.textContent='Preparando reconstrucción…';if(d.estado==='procesando')estado.textContent=`Reconstruyendo: ${done} de ${total} conversaciones terminadas`;if(['completado','cancelado','error'].includes(d.estado)){reconstruccionTerminado=true;if(d.estado==='completado'){progreso.style.width='100%';estado.textContent='Reconstrucción terminada';}else if(d.estado==='cancelado')estado.textContent='Reconstrucción cancelada';else estado.textContent='La reconstrucción se ha detenido por un error';detalle.textContent=d.mensaje||'';let h=`<strong>Progreso:</strong> ${pr} reconstruidas, ${om} omitidas y ${er.length} con error.`;if(d.estado==='cancelado')h+='<br>Los avances ya guardados se conservarán si reanudas el proceso.';if(er.length){h+='<ul id="reconstruccion-errores">';er.forEach(e=>h+=`<li>Sesión ${e.sesion_id??'?'}: ${escapeHtml(String(e.error||'error desconocido'))}</li>`);h+='</ul>';}resultado.innerHTML=h;resultado.style.display='block';bc.style.display='none';bc.disabled=false;bx.style.display='inline-block';br.style.display=(d.estado==='cancelado'||d.estado==='error')?'inline-block':'none';if(d.estado==='completado'){try{cerrarRecuerdos();await verMemoria({target:document.getElementById('nav-recuerdos')});}catch(_){}}}}
+while(!reconstruccionTerminado){await new Promise(r=>setTimeout(r,1000));const r=await apiFetch(`/api/reconstruir_memoria/${encodeURIComponent(reconstruccionJobId)}`),d=await r.json();if(!r.ok)throw new Error(d.detail||'No se pudo consultar el progreso.');const total=+d.total||0,pr=+d.procesadas||0,om=+d.omitidas||0,er=Array.isArray(d.errores)?d.errores:[],done=pr+om;progreso.style.width=`${total?Math.min(100,done/total*100):100}%`;if(d.estado==='pendiente')estado.textContent='Preparando reconstrucción…';if(d.estado==='procesando')estado.textContent=`Reconstruyendo: ${done} de ${total} conversaciones terminadas`;if(['completado','cancelado','error','sin_creditos'].includes(d.estado)){reconstruccionTerminado=true;actualizarIndicadorCreditos();if(d.estado==='completado'){progreso.style.width='100%';estado.textContent='Reconstrucción terminada';}else if(d.estado==='cancelado')estado.textContent='Reconstrucción cancelada';else if(d.estado==='sin_creditos')estado.textContent='Créditos insuficientes';else estado.textContent='La reconstrucción se ha detenido por un error';detalle.textContent=d.mensaje||'';let h=`<strong>Progreso:</strong> ${pr} reconstruidas, ${om} omitidas y ${er.length} con error.`;if(d.estado==='cancelado')h+='<br>Los avances ya guardados se conservarán si reanudas el proceso.';if(er.length){h+='<ul id="reconstruccion-errores">';er.forEach(e=>h+=`<li>Sesión ${e.sesion_id??'?'}: ${escapeHtml(String(e.error||'error desconocido'))}</li>`);h+='</ul>';}resultado.innerHTML=h;resultado.style.display='block';bc.style.display='none';bc.disabled=false;bx.style.display='inline-block';br.style.display=(d.estado==='cancelado'||d.estado==='error'||d.estado==='sin_creditos')?'inline-block':'none';if(d.estado==='completado'){try{cerrarRecuerdos();await verMemoria({target:document.getElementById('nav-recuerdos')});}catch(_){}}}}
 clearInterval(reconstruccionTemporizador);}
 async function reconstruirMemoria(){if(!confirm('La aplicación repasará todas tus conversaciones y reconstruirá la memoria. El proceso puede tardar bastante. Puedes cancelarlo y reanudarlo más tarde; el progreso ya guardado no se pierde.\n\n¿Quieres comenzar?'))return;const modal=document.getElementById('reconstruccion-modal');document.getElementById('reconstruccion-resultado').style.display='none';document.getElementById('reconstruccion-progreso').style.width='0%';document.getElementById('btn-cancelar-reconstruccion').style.display='inline-block';document.getElementById('btn-reanudar-reconstruccion').style.display='none';document.getElementById('btn-cerrar-reconstruccion').style.display='none';modal.style.display='flex';reconstruccionTerminado=false;reconstruccionInicio=Date.now();try{const r=await apiFetch('/api/reconstruir_memoria',{method:'POST'}),d=await r.json();if(!r.ok)throw new Error(d.detail||'El servidor no pudo iniciar la reconstrucción.');reconstruccionJobId=d.job_id;await vigilarReconstruccion();}catch(e){clearInterval(reconstruccionTemporizador);reconstruccionTerminado=true;document.getElementById('reconstruccion-estado').textContent='No se ha podido iniciar la reconstrucción';document.getElementById('reconstruccion-detalle').textContent=e.message||'Error desconocido.';document.getElementById('btn-cancelar-reconstruccion').style.display='none';document.getElementById('btn-cerrar-reconstruccion').style.display='inline-block';}}
 
@@ -1831,7 +1858,7 @@ async function cargarCuenta(){
     if(!r.ok)throw new Error(d.detail||'No se pudo consultar el plan.');
     const nombres={free:'Gratuito',premium:'Premium',legacy:'Acceso conservado'};
     document.getElementById('estado-plan-creditos').textContent=`Plan: ${nombres[d.plan]||d.nombre_plan||d.plan} — Estado: ${d.estado}`;
-    document.getElementById('resumen-creditos').innerHTML=`<p>Créditos mensuales: <strong>${Number(d.mensuales||0).toLocaleString('es-ES')}</strong></p><p>Créditos adicionales: <strong>${Number(d.adicionales||0).toLocaleString('es-ES')}</strong></p><p>Total disponible: <strong>${Number(d.total||0).toLocaleString('es-ES')}</strong></p>`;
+    document.getElementById('resumen-creditos').innerHTML=`<p>Créditos disponibles: <strong>${Number(d.total||0).toLocaleString('es-ES')}</strong></p><p>Caducidad de todos los créditos: <strong>${d.caducidad?new Date(d.caducidad+'Z').toLocaleDateString('es-ES'):'—'}</strong></p><p style="font-size:.82rem;color:var(--tinta-suave);">Cada nueva concesión o compra añade créditos al mismo saldo y renueva la fecha de caducidad de todo el saldo.</p>`;
     const movimientos=Array.isArray(d.movimientos)?d.movimientos:[];
     document.getElementById('historial-creditos').innerHTML=movimientos.length?'<strong>Últimos movimientos</strong><ul>'+movimientos.map(m=>`<li>${escapeHtml(m.creado||'')} — ${escapeHtml(m.tipo||'')} (${escapeHtml(m.bolsa||'')}): ${Number(m.cantidad||0)>0?'+':''}${Number(m.cantidad||0)} créditos</li>`).join('')+'</ul>':'Todavía no hay movimientos de créditos.';
   }catch(e){document.getElementById('estado-plan-creditos').textContent='No se pudo cargar la información de créditos.';document.getElementById('resumen-creditos').textContent='';document.getElementById('historial-creditos').textContent='';}
