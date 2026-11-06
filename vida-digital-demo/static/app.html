@@ -392,7 +392,7 @@
         <details><summary>¿Qué diferencia hay entre generar capítulos y generar la autobiografía completa?</summary><p>La generación por capítulos permite trabajar y revisar cada parte por separado. La generación completa solicita un relato unificado. Las distintas operaciones pueden tener costes de IA diferentes y se registran por separado en las métricas.</p></details>
         <details><summary>¿Puedo cambiar el tono de la autobiografía?</summary><p>Sí. Puedes elegir entre Natural, Literario, Sobrio, Íntimo y Mixto. El tono orienta la redacción, pero el contenido procede de la información que has proporcionado y de la memoria estructurada.</p></details>
 
-        <details><summary>¿Puedo pedir a familiares o allegados que aporten recuerdos?</summary><p>Sí. Desde «Familia» puedes invitar a otra persona a aportar recuerdos sobre tu vida. Esas aportaciones quedan diferenciadas de tus propias sesiones y pueden contribuir a enriquecer la reconstrucción de tu historia.</p></details>
+        <details><summary>¿Puedo pedir a familiares o allegados que aporten recuerdos?</summary><p>Sí. Desde «Familia» puedes invitar a otra persona a aportar recuerdos sobre tu vida. Esas aportaciones quedan diferenciadas de tus propias sesiones y no se incorporan automáticamente a la reconstrucción de tus Recuerdos: se conservan como testimonios externos para consultarlos por separado.</p></details>
         <details><summary>¿Qué es «Cómo me veo»?</summary><p>Es un cuestionario de reflexión personal. No pretende realizar un diagnóstico. Sus respuestas sirven para aportar a Lira información adicional sobre cómo te ves y ayudarla a conocerte mejor en futuras conversaciones.</p></details>
 
         <details><summary>¿Qué muestran las Métricas de uso?</summary><p>Muestran el consumo de inteligencia artificial asociado a tu cuenta: sesiones, tokens, tiempo, coste estimado y desglose por tipo de operación. El registro técnico distingue el modelo utilizado, los tokens de entrada y salida y el coste calculado de cada llamada.</p></details>
@@ -508,6 +508,7 @@
   </div>
 </div>
 
+<script src="/common.js"></script>
 <script>
 function ocultarVistas() {
   ['vista-entrevista','vista-cuestionario','vista-faq','vista-metricas','vista-autobiografia','vista-mis-datos'].forEach(id => {
@@ -597,9 +598,6 @@ async function apiFetch(url, opts = {}) {
   if (facturable && (resp.ok || resp.status === 402)) void actualizarIndicadorCreditos();
   return resp;
 }
-
-function alternarMenu() {}
-function cerrarMenu() {}
 
 async function salir() {
   await apiFetch('/api/logout', { method: 'POST' }).catch(() => {});
@@ -1361,17 +1359,7 @@ async function verTranscripcion(id, titulo) {
     cabecera.style.cssText = 'font-family:system-ui,sans-serif;font-size:.72rem;color:var(--tinta-suave);margin-bottom:18px;';
     cabecera.textContent = `— ${titulo} —`;
     el.appendChild(cabecera);
-    mensajes.filter(m => {
-      if (m.role !== 'user' && m.role !== 'assistant') return false;
-      if (m.role !== 'user') return true;
-      const contenido = String(m.content || '').trim();
-      return !(
-        contenido.startsWith('Resumen de memoria acumulado hasta ahora') ||
-        contenido.startsWith('Persona protagonista de este proyecto') ||
-        (contenido.includes('Resumen de memoria acumulado hasta ahora') && contenido.includes('Estrategia de entrevista acumulada')) ||
-        (contenido.startsWith('Año actual real:') && contenido.includes('Resumen de memoria acumulado hasta ahora'))
-      );
-    }).forEach(m => {
+    mensajes.filter(m => m.role === 'user' || m.role === 'assistant').forEach(m => {
       const bloque = document.createElement('div');
       bloque.style.cssText = 'margin-bottom:22px;';
       const etiqueta = document.createElement('div');
@@ -1877,14 +1865,6 @@ function mostrarResultadoMisDatos(texto, esError) {
   const el = document.getElementById('resultado-mis-datos');
   el.style.color = esError ? '#8c453a' : 'var(--tinta)';
   el.textContent = texto;
-}
-
-function formatearDetalle(data) {
-  const detalle = data && data.detail;
-  if (Array.isArray(detalle)) {
-    return detalle.map(err => err.msg || JSON.stringify(err)).join(' · ');
-  }
-  return detalle || 'Error.';
 }
 
 async function exportarMisDatos() {

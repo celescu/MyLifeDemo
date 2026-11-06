@@ -155,6 +155,7 @@
     <p class="resultado" id="resultado-backup-plano"></p>
   </div>
 
+<script src="/common.js"></script>
 <script>
 let usuariosAdmin = [];
 const modelosAdmin = [
@@ -169,17 +170,6 @@ function mostrar(id, texto, esError) {
   const el = document.getElementById(id);
   el.style.color = esError ? '#8c453a' : 'var(--tinta)';
   el.textContent = texto;
-}
-
-function formatearDetalle(data) {
-  // Los errores de validación de FastAPI/Pydantic llegan como una lista de
-  // objetos ({msg, loc, ...}), no como un texto simple — hay que extraer el
-  // mensaje de cada uno. Los errores "normales" de la app sí son texto.
-  const detalle = data && data.detail;
-  if (Array.isArray(detalle)) {
-    return detalle.map(err => err.msg || JSON.stringify(err)).join(' · ');
-  }
-  return detalle || 'Error.';
 }
 
 async function crearUsuario() {
