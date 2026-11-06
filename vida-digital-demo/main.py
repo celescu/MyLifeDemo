@@ -19,7 +19,7 @@ import asyncio
 import secrets
 import time
 import threading
-import traceback
+import logging
 import hashlib
 import re
 import math
@@ -32,6 +32,10 @@ from contextlib import contextmanager, asynccontextmanager
 from dotenv import load_dotenv
 
 load_dotenv()
+
+_LOG_LEVEL = logging.DEBUG if os.environ.get("ENTORNO", "produccion").lower() in {"desarrollo", "development", "dev"} else logging.INFO
+logging.basicConfig(level=_LOG_LEVEL, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+LOGGER = logging.getLogger("memoricorde")
 
 import sqlcipher3  # cifrado en reposo de la base de datos
 
@@ -57,7 +61,7 @@ DB_PATH = os.environ.get("DB_PATH") or (
     if os.environ.get("RAILWAY_VOLUME_MOUNT_PATH")
     else os.path.join(os.path.dirname(__file__), "memoria.db")
 )
-print(f"[db] usando base de datos: {DB_PATH}")
+LOGGER.info("Usando base de datos: %s", DB_PATH)
 MODEL_LEGACY = os.environ.get("MODEL") or "claude-sonnet-4-6"
 MODEL_ESTANDAR = os.environ.get("MODEL_ESTANDAR") or "claude-haiku-4-5-20251001"
 MODEL_AVANZADO = os.environ.get("MODEL_AVANZADO") or "claude-sonnet-4-6"
@@ -70,6 +74,17 @@ PRECIOS_MODELO = {
     "claude-sonnet-4-6": (3.0, 15.0),
     "claude-sonnet-5": (2.0, 10.0),
 }
+
+for _nombre_modelo, _modelo_configurado in (
+    ("MODEL_LEGACY", MODEL_LEGACY),
+    ("MODEL_ESTANDAR", MODEL_ESTANDAR),
+    ("MODEL_AVANZADO", MODEL_AVANZADO),
+):
+    if _modelo_configurado not in MODELOS_DISPONIBLES or _modelo_configurado not in PRECIOS_MODELO:
+        raise RuntimeError(
+            f"{_nombre_modelo}={_modelo_configurado!r} no está definido simultáneamente "
+            "en MODELOS_DISPONIBLES y PRECIOS_MODELO."
+        )
 PRECIO_INPUT_POR_MILLON = PRECIOS_MODELO.get(MODEL_LEGACY, (3.0, 15.0))[0]
 PRECIO_OUTPUT_POR_MILLON = PRECIOS_MODELO.get(MODEL_LEGACY, (3.0, 15.0))[1]
 
@@ -126,12 +141,10 @@ def llamar_a_claude(**kwargs):
     (modelo no disponible, límite de la cuenta, error de red...), quede un
     traceback claro en los logs del servidor y el usuario reciba un mensaje
     entendible en vez de un error genérico sin explicación."""
-    import traceback
     try:
         return client.messages.create(**kwargs)
     except anthropic.APIError as e:
-        print(f"[ERROR] Llamada a Anthropic falló (modelo={kwargs.get('model')}): {e}")
-        traceback.print_exc()
+        LOGGER.exception("Llamada a Anthropic falló (modelo=%s)", kwargs.get("model"))
         raise HTTPException(
             status_code=502,
             detail="Lira no ha podido responder ahora mismo. Inténtalo de nuevo en un momento.",
@@ -207,8 +220,8 @@ def _ejecutar_reconstruccion(job_id,usuario,filas):
                 transcripcion=transcripcion_solo_conversacion(mensajes)
                 nuevo,titulo,respuesta=construir_resumen_desde_transcripcion(usuario,resumen_actual,transcripcion,operacion="reconstruccion",referencia=job_id)
                 if nuevo is None: raise RuntimeError("El modelo no devolvió la herramienta de memoria.")
-                resumen_actual=nuevo; registrar_uso_diario(usuario,respuesta.usage.input_tokens,respuesta.usage.output_tokens, es_mensaje_conversacion=False); marcar_cerrada(sid)
-                if titulo: aplicar_titulo_generado(sid,titulo)
+                resumen_actual=nuevo; registrar_uso_diario(usuario,respuesta.usage.input_tokens,respuesta.usage.output_tokens, es_mensaje_conversacion=False); marcar_cerrada(sid, usuario)
+                if titulo: aplicar_titulo_generado(sid,titulo,usuario)
                 guardar_resumen(usuario,resumen_actual); procesadas+=1; hechas.add(sid); errores=[e for e in errores if e.get("sesion_id")!=sid]
                 _guardar_estado_reconstruccion(job_id,procesadas=procesadas,errores=json.dumps(errores,ensure_ascii=False),procesadas_ids=json.dumps(sorted(hechas)),mensaje=f"Sesión {sid} reconstruida correctamente.")
             except HTTPException as exc:
@@ -217,11 +230,11 @@ def _ejecutar_reconstruccion(job_id,usuario,filas):
                         procesadas=procesadas,omitidas=omitidas,errores=json.dumps(errores,ensure_ascii=False),
                         procesadas_ids=json.dumps(sorted(hechas)),mensaje=str(exc.detail))
                     return
-                detalle=str(exc.detail or exc); print(f"[ERROR] reconstruir_memoria, sesión {sid}: {detalle}")
+                detalle=str(exc.detail or exc); LOGGER.error("Error al reconstruir la sesión %s: %s", sid, detalle)
                 errores=[e for e in errores if e.get("sesion_id")!=sid]+[{"sesion_id":sid,"error":detalle}]
                 _guardar_estado_reconstruccion(job_id,errores=json.dumps(errores,ensure_ascii=False),mensaje=f"La sesión {sid} ha dado un error; continúo con la siguiente.")
             except Exception as exc:
-                detalle=str(exc) or exc.__class__.__name__; print(f"[ERROR] reconstruir_memoria, sesión {sid}: {detalle}"); traceback.print_exc()
+                detalle=str(exc) or exc.__class__.__name__; LOGGER.error("Error al reconstruir la sesión %s: %s", sid, detalle); LOGGER.exception("Excepción en operación de Memoricorde")
                 errores=[e for e in errores if e.get("sesion_id")!=sid]+[{"sesion_id":sid,"error":detalle}]
                 _guardar_estado_reconstruccion(job_id,errores=json.dumps(errores,ensure_ascii=False),mensaje=f"La sesión {sid} ha dado un error; continúo con la siguiente.")
         guardar_resumen(usuario,resumen_actual)
@@ -230,10 +243,30 @@ def _ejecutar_reconstruccion(job_id,usuario,filas):
         else:
             _guardar_estado_reconstruccion(job_id,estado="cancelado",sesion_actual=None,fin=datetime.utcnow().isoformat(),mensaje="La reconstrucción se ha detenido. Puedes reanudarla.",procesadas=procesadas,omitidas=omitidas,errores=json.dumps(errores,ensure_ascii=False),procesadas_ids=json.dumps(sorted(hechas)))
     except Exception as exc:
-        detalle=str(exc) or exc.__class__.__name__; traceback.print_exc(); _guardar_estado_reconstruccion(job_id,estado="error",sesion_actual=None,fin=datetime.utcnow().isoformat(),mensaje=f"La reconstrucción se detuvo por un error: {detalle}",errores=json.dumps(errores,ensure_ascii=False),procesadas=procesadas,omitidas=omitidas,procesadas_ids=json.dumps(sorted(hechas)))
+        detalle=str(exc) or exc.__class__.__name__; LOGGER.exception("Excepción en operación de Memoricorde"); _guardar_estado_reconstruccion(job_id,estado="error",sesion_actual=None,fin=datetime.utcnow().isoformat(),mensaje=f"La reconstrucción se detuvo por un error: {detalle}",errores=json.dumps(errores,ensure_ascii=False),procesadas=procesadas,omitidas=omitidas,procesadas_ids=json.dumps(sorted(hechas)))
+
+RECONSTRUCCIONES_HILOS_ACTIVOS = set()
+
+def _ejecutar_reconstruccion_protegida(job_id, usuario, filas):
+    try:
+        _ejecutar_reconstruccion(job_id, usuario, filas)
+    finally:
+        with RECONSTRUCCIONES_LOCK:
+            RECONSTRUCCIONES_HILOS_ACTIVOS.discard(job_id)
 
 def _iniciar_hilo_reconstruccion(job_id,usuario,filas):
-    threading.Thread(target=_ejecutar_reconstruccion,args=(job_id,usuario,filas),name=f"reconstruccion-{job_id}",daemon=True).start()
+    with RECONSTRUCCIONES_LOCK:
+        if job_id in RECONSTRUCCIONES_HILOS_ACTIVOS:
+            return False
+        RECONSTRUCCIONES_HILOS_ACTIVOS.add(job_id)
+        hilo = threading.Thread(target=_ejecutar_reconstruccion_protegida,
+            args=(job_id,usuario,filas), name=f"reconstruccion-{job_id}", daemon=True)
+        try:
+            hilo.start()
+        except Exception:
+            RECONSTRUCCIONES_HILOS_ACTIVOS.discard(job_id)
+            raise
+    return True
 
 # ---------------------------------------------------------------------------
 # Ciclo de vida (lifespan) — sustituye al obsoleto @app.on_event("startup")
@@ -690,7 +723,7 @@ def migrar_a_cifrado_si_es_necesario():
     if not cabecera.startswith(b"SQLite format 3\x00"):
         return  # ya está cifrada
 
-    print("[cifrado] Detectada base de datos sin cifrar. Migrando a SQLCipher...")
+    LOGGER.warning("Detectada base de datos sin cifrar. Migrando a SQLCipher...")
     ruta_backup_plano = DB_PATH + ".sin_cifrar.backup"
 
     # 1. Copia de seguridad del original
@@ -745,8 +778,8 @@ def migrar_a_cifrado_si_es_necesario():
     #    intacto en DB_PATH, y el .cifrado.tmp se descarta al arrancar de nuevo.
     os.replace(ruta_temporal, DB_PATH)
 
-    print(f"[cifrado] Migración completada. Copia sin cifrar en: {ruta_backup_plano}")
-    print("[cifrado] IMPORTANTE: bórrala en cuanto confirmes que todo funciona.")
+    LOGGER.warning("Migración completada. Copia sin cifrar en: %s", ruta_backup_plano)
+    LOGGER.warning("La copia sin cifrar debe eliminarse cuando se confirme la migración.")
 
 
 migrar_a_cifrado_si_es_necesario()
@@ -779,7 +812,7 @@ def hacer_backup_automatico():
     while len(backups_existentes) > NUM_BACKUPS_AUTOMATICOS_A_CONSERVAR:
         os.remove(os.path.join(CARPETA_BACKUPS_AUTOMATICOS, backups_existentes.pop(0)))
 
-    print(f"[backup] Copia automática creada: {ruta_backup}")
+    LOGGER.info("Copia automática creada: %s", ruta_backup)
 
 
 async def bucle_backups_automaticos():
@@ -787,7 +820,7 @@ async def bucle_backups_automaticos():
         try:
             await asyncio.to_thread(hacer_backup_automatico)
         except Exception as e:
-            print(f"[backup] Error al generar la copia automática: {e}")
+            LOGGER.exception("Error al generar la copia automática")
         await asyncio.sleep(INTERVALO_BACKUP_SEGUNDOS)
 
 
@@ -827,6 +860,19 @@ class NuevaAportacionIn(BaseModel):
 
 class AutopercepcionIn(BaseModel):
     respuestas: dict
+
+    @field_validator("respuestas")
+    @classmethod
+    def validar_respuestas(cls, valor):
+        if not isinstance(valor, dict):
+            raise ValueError("Las respuestas deben ser un objeto.")
+        permitidas = {item["id"] for item in CUESTIONARIO_AUTOPERCEPCION}
+        desconocidas = set(valor) - permitidas
+        if desconocidas:
+            raise ValueError("Hay claves de autopercepción no reconocidas.")
+        if len(json.dumps(valor, ensure_ascii=False)) > 8000:
+            raise ValueError("Las respuestas superan el tamaño máximo permitido.")
+        return valor
 
 class EditarMemoriaIn(BaseModel):
     seccion: str
@@ -1207,8 +1253,8 @@ async def bucle_caducidad_creditos():
         try:
             await asyncio.to_thread(aplicar_caducidades_creditos_pendientes)
         except Exception as exc:
-            print(f"[créditos] Error al aplicar caducidades: {exc}")
-            traceback.print_exc()
+            LOGGER.exception("Error al aplicar caducidades de créditos")
+            LOGGER.exception("Excepción en operación de Memoricorde")
         await asyncio.sleep(3600)
 
 
@@ -1250,10 +1296,18 @@ def llamar_a_claude_facturable(usuario: str, servicio_id: str, modelo: str,
     except Exception:
         if reserva:
             try: liberar_reserva_creditos(reserva,"La llamada a la IA no se completó")
-            except Exception: traceback.print_exc()
+            except Exception: LOGGER.exception("Excepción en operación de Memoricorde")
         raise
     if reserva:
-        liquidar_reserva_creditos(reserva,coste)
+        try:
+            liquidar_reserva_creditos(reserva,coste)
+        except Exception:
+            try:
+                liberar_reserva_creditos(reserva, "Fallo al liquidar")
+            except Exception:
+                logging.getLogger("memoricorde").exception("No se pudo liberar la reserva %s tras fallar la liquidación", reserva)
+            logging.getLogger("memoricorde").exception("Falló la liquidación de créditos de la reserva %s", reserva)
+            raise
     return respuesta
 
 def resumen_comercial_usuario(usuario: str) -> dict:
@@ -1262,7 +1316,8 @@ def resumen_comercial_usuario(usuario: str) -> dict:
         plan=conn.execute("SELECT nombre,creditos_mensuales,prestaciones_json FROM planes WHERE id=?",(saldo["plan"],)).fetchone()
         movimientos=conn.execute("SELECT tipo,bolsa,cantidad,referencia,descripcion,creado FROM movimientos_creditos WHERE usuario=? ORDER BY id DESC LIMIT 30",(usuario,)).fetchall()
         pendientes=conn.execute("SELECT COUNT(*) AS n FROM reservas_creditos WHERE usuario=? AND estado IN ('reservado','incidencia')",(usuario,)).fetchone()["n"]
-    saldo.update({"nombre_plan":plan["nombre"] if plan else saldo["plan"],"cuota_mensual_configurada":int(plan["creditos_mensuales"] or 0) if plan else 0,"prestaciones":json.loads(plan["prestaciones_json"] or "{}") if plan else {},"reservas_pendientes":int(pendientes),"movimientos": [dict(x) for x in movimientos]})
+        reservado=conn.execute("SELECT COALESCE(SUM(cantidad_reservada),0) AS n FROM reservas_creditos WHERE usuario=? AND estado='reservado'",(usuario,)).fetchone()["n"]
+    saldo.update({"reservado":int(reservado or 0),"disponible":int(saldo["total"]),"nombre_plan":plan["nombre"] if plan else saldo["plan"],"cuota_mensual_configurada":int(plan["creditos_mensuales"] or 0) if plan else 0,"prestaciones":json.loads(plan["prestaciones_json"] or "{}") if plan else {},"reservas_pendientes":int(pendientes),"movimientos": [dict(x) for x in movimientos]})
     return saldo
 
 
@@ -1605,11 +1660,11 @@ def obtener_avisos_uso_indebido(sesion_id: int) -> int:
     return int(fila["avisos_uso_indebido"] or 0) if fila else 0
 
 
-def marcar_cerrada(sesion_id: int):
+def marcar_cerrada(sesion_id: int, usuario: str):
     with db() as conn:
         conn.execute(
-            "UPDATE sesiones SET cerrada = 1, fecha_cierre = ? WHERE id = ?",
-            (datetime.utcnow().isoformat(), sesion_id),
+            "UPDATE sesiones SET cerrada = 1, fecha_cierre = ? WHERE id = ? AND usuario = ?",
+            (datetime.utcnow().isoformat(), sesion_id, usuario),
         )
 
 
@@ -1639,38 +1694,36 @@ def registrar_uso_diario(usuario: str, tokens_input: int, tokens_output: int, es
 
 
 def comprobar_limite_diario(usuario: str, comprobar_mensajes: bool = True):
-    """Bloquea antes de llamar a la API si el usuario ya ha agotado su
-    límite diario de mensajes o de coste estimado, para no gastar ni un
-    token de más una vez alcanzado el tope."""
+    """Comprueba los topes diarios efectivos del plan antes de llamar a IA."""
     fecha = datetime.utcnow().date().isoformat()
     with db() as conn:
         row = conn.execute(
             "SELECT mensajes, tokens_input, tokens_output FROM uso_diario WHERE usuario = ? AND fecha = ?",
             (usuario, fecha),
         ).fetchone()
-    if not row:
-        return
-    if comprobar_mensajes and row["mensajes"] >= LIMITE_MENSAJES_DIARIOS:
-        raise HTTPException(
-            status_code=429,
-            detail=f"Has llegado al límite de {LIMITE_MENSAJES_DIARIOS} mensajes de hoy. Puedes continuar mañana.",
-        )
-    with db() as conn:
+        plan = conn.execute(
+            """SELECT p.limite_mensajes_diarios, p.limite_coste_diario_usd
+               FROM cuentas_comerciales c
+               LEFT JOIN planes p ON p.id = c.plan_id WHERE c.usuario = ?""",
+            (usuario,),
+        ).fetchone()
         fila_coste = conn.execute(
             "SELECT COALESCE(SUM(coste_usd),0) AS coste, COUNT(*) AS n FROM uso_ia WHERE usuario=? AND substr(fecha,1,10)=?",
             (usuario, fecha),
         ).fetchone()
+    limite_mensajes = int(plan["limite_mensajes_diarios"]) if plan and plan["limite_mensajes_diarios"] is not None else LIMITE_MENSAJES_DIARIOS
+    limite_coste = float(plan["limite_coste_diario_usd"]) if plan and plan["limite_coste_diario_usd"] is not None else LIMITE_COSTE_DIARIO_USD
+    mensajes = int(row["mensajes"] or 0) if row else 0
+    if comprobar_mensajes and mensajes >= limite_mensajes:
+        raise HTTPException(status_code=429, detail=f"Has llegado al límite de {limite_mensajes} mensajes de hoy. Puedes continuar mañana.")
     if fila_coste["n"]:
         coste_dia = float(fila_coste["coste"] or 0)
-    else:
-        # Compatibilidad con días anteriores a la introducción del registro
-        # detallado de uso: se mantiene el cálculo antiguo como respaldo.
+    elif row:
         coste_dia = calcular_coste(row["tokens_input"], row["tokens_output"])
-    if coste_dia >= LIMITE_COSTE_DIARIO_USD:
-        raise HTTPException(
-            status_code=429,
-            detail="Has llegado al límite de uso diario. Puedes continuar mañana.",
-        )
+    else:
+        coste_dia = 0.0
+    if coste_dia >= limite_coste:
+        raise HTTPException(status_code=429, detail="Has llegado al límite de uso diario. Puedes continuar mañana.")
 
 
 def exportar_datos_usuario(usuario: str) -> dict:
@@ -1947,6 +2000,15 @@ def cuenta_actual(usuario: str = Depends(obtener_usuario_actual)):
 def api_creditos(usuario: str = Depends(obtener_usuario_actual)):
     return resumen_comercial_usuario(usuario)
 
+@app.get("/api/creditos/estimacion")
+def api_creditos_estimacion(servicio: str, modelo: str = MODEL_ESTANDAR,
+                            usuario: str = Depends(obtener_usuario_actual)):
+    if modelo not in MODELOS_DISPONIBLES:
+        raise HTTPException(status_code=400, detail="Modelo no permitido")
+    coste = tarifa_creditos_servicio(servicio, modelo)
+    return {"servicio": servicio, "modelo": modelo, "creditos": coste}
+
+
 @app.get("/api/creditos/movimientos")
 def api_creditos_movimientos(usuario: str = Depends(obtener_usuario_actual), limite: int = 50):
     limite=max(1,min(int(limite),200))
@@ -2214,7 +2276,7 @@ def enviar_mensaje(request: Request, payload: MensajeIn, usuario: str = Depends(
         messages=mensajes,
         timeout=45.0,  # una respuesta de entrevista debe ser rápida; si tarda más, algo va mal
     )
-    print(f"[tiempos] enviar_mensaje ({usuario}, sesión {sesion_id}): {time.perf_counter() - _inicio:.1f}s")
+    LOGGER.debug("enviar_mensaje (%s, sesión %s): %.1fs", usuario, sesion_id, time.perf_counter() - _inicio)
     texto = respuesta.content[0].text
     indice_respuesta = len(mensajes)
     mensajes.append({"role": "assistant", "content": texto})
@@ -2232,8 +2294,8 @@ def enviar_mensaje(request: Request, payload: MensajeIn, usuario: str = Depends(
 
     if texto.startswith(MARCADOR_CIERRE_USO_INDEBIDO):
         texto_visible = texto[len(MARCADOR_CIERRE_USO_INDEBIDO):].strip()
-        marcar_cerrada(sesion_id)
-        print(f"[AVISO] Sesión {sesion_id} cerrada automáticamente por uso indebido (usuario: {usuario})")
+        marcar_cerrada(sesion_id, usuario)
+        LOGGER.warning("Sesión %s cerrada automáticamente por uso indebido (usuario: %s)", sesion_id, usuario)
         return {
             "sesion_id": sesion_id,
             "respuesta": texto_visible,
@@ -2257,6 +2319,7 @@ def construir_resumen_desde_transcripcion(usuario: str, resumen_previo: dict, tr
     normal, para fusionar una transcripción con el resumen de memoria previo.
     Se usa tanto al cerrar una sesión como al reconstruir la memoria completa
     a partir de sesiones antiguas."""
+    comprobar_limite_diario(usuario, comprobar_mensajes=False)
     modelo_resumen = obtener_modelo_usuario(usuario, "entrevista")
     servicio_creditos = {"cierre_sesion":"cerrar_sesion", "reconstruccion":"reconstruir_recuerdos", "reprocesar_sesion":"reprocesar_sesion"}.get(operacion, "cerrar_sesion")
     respuesta = llamar_a_claude_facturable(
@@ -2281,8 +2344,8 @@ def construir_resumen_desde_transcripcion(usuario: str, resumen_previo: dict, tr
     registrar_consumo_ia(usuario, operacion, obtener_modelo_usuario(usuario, "entrevista"), respuesta, referencia)
     bloque_herramienta = next((b for b in respuesta.content if b.type == "tool_use"), None)
     if bloque_herramienta is None:
-        print(f"[AVISO] El modelo no devolvió una llamada a la herramienta para {usuario}")
-        print(f"[AVISO] stop_reason: {respuesta.stop_reason}, contenido: {respuesta.content}")
+        LOGGER.warning("El modelo no devolvió una llamada a la herramienta para %s", usuario)
+        LOGGER.warning("Respuesta sin herramienta: stop_reason=%s, contenido=%s", respuesta.stop_reason, respuesta.content)
         return None, None, respuesta
 
     nuevo_resumen = bloque_herramienta.input
@@ -2321,9 +2384,9 @@ def cerrar_sesion(payload: CerrarSesionIn, usuario: str = Depends(obtener_usuari
             usuario, resumen_previo, transcripcion, operacion="cierre_sesion", referencia=payload.sesion_id
         )
     except anthropic.APITimeoutError:
-        print(f"[tiempos] cerrar_sesion ({usuario}, sesión {payload.sesion_id}): TIMEOUT tras {time.perf_counter() - _inicio:.1f}s")
+        LOGGER.warning("cerrar_sesion (%s, sesión %s): timeout tras %.1fs", usuario, payload.sesion_id, time.perf_counter() - _inicio)
         return {"error": "la generación del resumen ha tardado demasiado y se ha cancelado; la conversación sigue guardada íntegra, puedes reintentar cerrar esta sesión más tarde"}
-    print(f"[tiempos] cerrar_sesion ({usuario}, sesión {payload.sesion_id}): {time.perf_counter() - _inicio:.1f}s")
+    LOGGER.debug("cerrar_sesion (%s, sesión %s): %.1fs", usuario, payload.sesion_id, time.perf_counter() - _inicio)
 
     if nuevo_resumen is None:
         return {"error": "no se pudo generar el resumen esta vez, la conversación sigue guardada íntegra"}
@@ -2331,9 +2394,9 @@ def cerrar_sesion(payload: CerrarSesionIn, usuario: str = Depends(obtener_usuari
     guardar_resumen(usuario, nuevo_resumen)
     sumar_tokens(payload.sesion_id, respuesta.usage.input_tokens, respuesta.usage.output_tokens)
     registrar_uso_diario(usuario, respuesta.usage.input_tokens, respuesta.usage.output_tokens, es_mensaje_conversacion=False)
-    marcar_cerrada(payload.sesion_id)
+    marcar_cerrada(payload.sesion_id, usuario)
     if titulo_sesion:
-        aplicar_titulo_generado(payload.sesion_id, titulo_sesion)
+        aplicar_titulo_generado(payload.sesion_id, titulo_sesion, usuario)
 
     return {"resumen": nuevo_resumen}
 
@@ -2346,8 +2409,7 @@ def iniciar_reconstruccion_memoria(request: Request, usuario: str = Depends(obte
         activa=conn.execute("SELECT * FROM reconstrucciones WHERE usuario=? AND estado IN ('pendiente','procesando') ORDER BY inicio DESC LIMIT 1",(usuario,)).fetchone()
     if activa:
         job_id=activa["id"]
-        vivo=any(t.name==f"reconstruccion-{job_id}" and t.is_alive() for t in threading.enumerate())
-        if not vivo: _iniciar_hilo_reconstruccion(job_id,usuario,filas)
+        _iniciar_hilo_reconstruccion(job_id,usuario,filas)
         return JSONResponse(status_code=202,content=_estado_publico_reconstruccion(dict(activa)))
     modelo_reconstruccion=obtener_modelo_usuario(usuario,"entrevista")
     comprobar_creditos_servicio(usuario,"reconstruir_recuerdos",modelo_reconstruccion)
@@ -2381,12 +2443,12 @@ def estado_reconstruccion_memoria(job_id:str,usuario:str=Depends(obtener_usuario
     return _estado_publico_reconstruccion(row)
 
 
-def aplicar_titulo_generado(sesion_id: int, titulo: str):
+def aplicar_titulo_generado(sesion_id: int, titulo: str, usuario: str):
     """Solo sobrescribe el título si el usuario no le ha puesto ya uno a mano."""
     with db() as conn:
         conn.execute(
-            "UPDATE sesiones SET titulo = ? WHERE id = ? AND titulo_manual = 0",
-            (titulo, sesion_id),
+            "UPDATE sesiones SET titulo = ? WHERE id = ? AND usuario = ? AND titulo_manual = 0",
+            (titulo, sesion_id, usuario),
         )
 
 
@@ -2463,7 +2525,7 @@ def enviar_mensaje_aportacion(request: Request, payload: MensajeIn, usuario: str
         messages=mensajes,
         timeout=45.0,
     )
-    print(f"[tiempos] aportacion_mensaje ({usuario}, sesión {sesion_id}): {time.perf_counter() - _inicio:.1f}s")
+    LOGGER.debug("aportacion_mensaje (%s, sesión %s): %.1fs", usuario, sesion_id, time.perf_counter() - _inicio)
     texto = respuesta.content[0].text
     indice_respuesta = len(mensajes)
     mensajes.append({"role": "assistant", "content": texto})
@@ -2486,18 +2548,20 @@ def cerrar_aportacion(sesion_id: int, usuario: str = Depends(obtener_usuario_act
         raise HTTPException(status_code=404, detail="Sesión de aportación no encontrada")
 
     mensajes = json.loads(row["mensajes"])
-    marcar_cerrada(sesion_id)
-    aplicar_titulo_generado(sesion_id, calcular_titulo(mensajes))
+    marcar_cerrada(sesion_id, usuario)
+    aplicar_titulo_generado(sesion_id, calcular_titulo(mensajes), usuario)
     return {"ok": True}
 
 
 @app.get("/api/aportaciones")
-def listar_aportaciones(usuario: str = Depends(obtener_usuario_actual)):
+def listar_aportaciones(limit: int = 50, offset: int = 0, usuario: str = Depends(obtener_usuario_actual)):
+    limit = max(1, min(int(limit), 200))
+    offset = max(0, int(offset))
     with db() as conn:
         filas = conn.execute(
             "SELECT id, fecha, cerrada, mensajes, titulo, aportante_nombre, aportante_relacion "
-            "FROM sesiones WHERE usuario = ? AND tipo = 'externa' ORDER BY id DESC",
-            (usuario,),
+            "FROM sesiones WHERE usuario = ? AND tipo = 'externa' ORDER BY id DESC LIMIT ? OFFSET ?",
+            (usuario, limit, offset),
         ).fetchall()
     resultado = []
     for f in filas:
@@ -2545,15 +2609,16 @@ def validar_coherencia_fechas(resumen: dict, usuario: str):
         if anio is None:
             continue
         if anio_nacimiento is not None and anio < anio_nacimiento:
-            print(f"[AVISO] Posible error de fechas para {usuario}: evento '{evento.get('evento')}' "
-                  f"con año {anio}, anterior al año de nacimiento {anio_nacimiento}")
+            LOGGER.warning("Posible error de fechas para %s: evento %r con año %s, anterior al nacimiento %s",
+                           usuario, evento.get("evento"), anio, anio_nacimiento)
         if anio > anio_actual:
-            print(f"[AVISO] Posible error de fechas para {usuario}: evento '{evento.get('evento')}' "
-                  f"con año {anio}, posterior al año actual {anio_actual}")
+            LOGGER.warning("Posible error de fechas para %s: evento %r con año %s, posterior al año actual %s",
+                           usuario, evento.get("evento"), anio, anio_actual)
 
 
 MARCADOR_CONTEXTO_INTERNO = "Resumen de memoria acumulado hasta ahora"
 MARCADOR_CONTEXTO_APORTACION = "Persona protagonista de este proyecto"
+MARCADOR_MODO_SORPRENDEME = "[MODO SORPRÉNDEME]"
 MARCADOR_CIERRE_USO_INDEBIDO = "[CIERRE_POR_USO_INDEBIDO]"
 MARCADOR_AVISO_USO_INDEBIDO = "[AVISO_USO_INDEBIDO]"
 
@@ -2564,7 +2629,8 @@ def es_contexto_interno_sesion(mensaje: dict) -> bool:
         return False
     contenido = str(mensaje.get("content") or "").strip()
     return (
-        contenido.startswith(MARCADOR_CONTEXTO_INTERNO)
+        contenido.startswith(MARCADOR_MODO_SORPRENDEME)
+        or contenido.startswith(MARCADOR_CONTEXTO_INTERNO)
         or contenido.startswith(MARCADOR_CONTEXTO_APORTACION)
         or (
             "Resumen de memoria acumulado hasta ahora" in contenido
@@ -2588,22 +2654,23 @@ def transcripcion_solo_conversacion(mensajes: list) -> str:
 
 def calcular_titulo(mensajes: list) -> str:
     for m in mensajes:
-        if m["role"] == "user" and not m["content"].startswith(MARCADOR_CONTEXTO_INTERNO) \
-                and not m["content"].startswith(MARCADOR_CONTEXTO_APORTACION) \
-                and not m["content"].startswith(MARCADOR_CIERRE_USO_INDEBIDO) \
-                and not m["content"].startswith(MARCADOR_AVISO_USO_INDEBIDO):
-            texto = m["content"].strip()
+        contenido = str(m.get("content") or "")
+        if m.get("role") == "user" and not es_contexto_interno_sesion(m) \
+                and not contenido.startswith(MARCADOR_CIERRE_USO_INDEBIDO) \
+                and not contenido.startswith(MARCADOR_AVISO_USO_INDEBIDO):
+            texto = contenido.strip()
             return texto[:60] + ("…" if len(texto) > 60 else "")
     return "(sesión sin mensajes todavía)"
 
-
 @app.get("/api/sesiones")
-def listar_sesiones(usuario: str = Depends(obtener_usuario_actual)):
+def listar_sesiones(limit: int = 50, offset: int = 0, usuario: str = Depends(obtener_usuario_actual)):
+    limit = max(1, min(int(limit), 200))
+    offset = max(0, int(offset))
     with db() as conn:
         filas = conn.execute(
             "SELECT id, fecha, cerrada, mensajes, titulo, titulo_manual FROM sesiones "
-            "WHERE usuario = ? AND (tipo IS NULL OR tipo = 'propia') ORDER BY id DESC",
-            (usuario,),
+            "WHERE usuario = ? AND (tipo IS NULL OR tipo = 'propia') ORDER BY id DESC LIMIT ? OFFSET ?",
+            (usuario, limit, offset),
         ).fetchall()
     resultado = []
     for f in filas:
@@ -2997,6 +3064,13 @@ async def restaurar_db(
             )
 
     os.replace(ruta_temporal, DB_PATH)
+    if es_sqlite_plano:
+        ruta_backup = DB_PATH + ".sin_cifrar.backup"
+        if os.path.exists(ruta_backup):
+            sello = datetime.utcnow().strftime("%Y%m%d_%H%M%S_%f")
+            preservado = f"{ruta_backup}.{sello}.bak"
+            os.replace(ruta_backup, preservado)
+            logging.getLogger("memoricorde").warning("Backup plano anterior preservado en %s", preservado)
     migrar_a_cifrado_si_es_necesario()
     init_db()
 
@@ -3022,8 +3096,12 @@ async def restaurar_mis_datos(
         raise HTTPException(status_code=403, detail="Contraseña incorrecta")
     try:
         datos = json.loads(await archivo.read())
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, UnicodeDecodeError):
         raise HTTPException(status_code=400, detail="El archivo no es un backup válido")
+    if not isinstance(datos, dict):
+        raise HTTPException(status_code=400, detail="El archivo no es un backup válido")
+    if datos.get("usuario") != usuario:
+        raise HTTPException(status_code=400, detail="El backup no pertenece a esta cuenta")
     restaurar_datos_usuario(usuario, datos)
     return {"ok": True, "mensaje": "Tus datos han sido restaurados"}
 
@@ -3194,7 +3272,7 @@ def editar_memoria(request: Request, payload: EditarMemoriaIn, usuario: str = De
     elif payload.seccion=="bloques":
         claves={"infancia","familia","lugares","estudios","trabajo","relaciones","momentos_de_cambio","valores","aficiones","otros"}
         if payload.campo not in claves: raise HTTPException(status_code=400,detail="Bloque no válido")
-        valor=str(valor or ""); resumen.setdefault("bloques",{})[payload.campo]=valor; resumen["_manual_fields"][f"bloques.{payload.campo}"]=valor
+        valor=str(valor) if valor is not None else ""; resumen.setdefault("bloques",{})[payload.campo]=valor; resumen["_manual_fields"][f"bloques.{payload.campo}"]=valor
     elif payload.seccion=="cronologia":
         if payload.indice is None or not 0<=payload.indice<len(resumen.get("cronologia",[])): raise HTTPException(status_code=400,detail="Evento de cronología no válido")
         if payload.campo not in {"anio","momento","evento"}: raise HTTPException(status_code=400,detail="Campo de cronología no válido")
@@ -3337,7 +3415,8 @@ def cambiar_tono_autobiografia(payload: AutobiografiaTonoIn, usuario: str = Depe
 
 
 @app.post("/api/autobiografia/capitulos/{capitulo_id}/generar")
-def generar_capitulo_autobiografia(capitulo_id: int, usuario: str = Depends(obtener_usuario_actual)):
+@limiter.limit("10/minute")
+def generar_capitulo_autobiografia(request: Request, capitulo_id: int, usuario: str = Depends(obtener_usuario_actual)):
     comprobar_limite_diario(usuario, comprobar_mensajes=False)
     resumen = cargar_resumen(usuario)
     _comprobar_memoria_autobiografia(resumen)
@@ -3379,7 +3458,8 @@ def editar_capitulo_autobiografia(capitulo_id: int, payload: EditarCapituloIn, u
 
 
 @app.post("/api/autobiografia/capitulos/{capitulo_id}/mejorar")
-def mejorar_capitulo_autobiografia(capitulo_id: int, payload: AccionCapituloIn, usuario: str = Depends(obtener_usuario_actual)):
+@limiter.limit("10/minute")
+def mejorar_capitulo_autobiografia(request: Request, capitulo_id: int, payload: AccionCapituloIn, usuario: str = Depends(obtener_usuario_actual)):
     comprobar_limite_diario(usuario, comprobar_mensajes=False)
     acciones = {"reescribir": "reescribe el capítulo manteniendo exactamente los hechos", "desarrollar": "desarrolla los pasajes que ya tienen material suficiente, sin añadir hechos", "acortar": "hazlo más conciso sin perder hechos importantes", "literario": "mejora el ritmo y la calidad literaria sin inventar nada", "personal": "haz la voz más personal y cercana sin inventar pensamientos ni hechos"}
     if payload.accion not in acciones: raise HTTPException(status_code=400, detail="Acción no permitida")
@@ -3401,7 +3481,8 @@ def mejorar_capitulo_autobiografia(capitulo_id: int, payload: AccionCapituloIn, 
 
 
 @app.post("/api/autobiografia/generar-completa")
-def generar_autobiografia_completa(usuario: str = Depends(obtener_usuario_actual)):
+@limiter.limit("10/minute")
+def generar_autobiografia_completa(request: Request, usuario: str = Depends(obtener_usuario_actual)):
     comprobar_limite_diario(usuario, comprobar_mensajes=False)
     with db() as conn:
         proyecto=conn.execute("SELECT tono FROM autobiografia_proyectos WHERE usuario=?",(usuario,)).fetchone()

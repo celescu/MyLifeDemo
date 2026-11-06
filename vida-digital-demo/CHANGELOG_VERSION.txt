@@ -1,3 +1,31 @@
+MEMORICORDE — REVISIÓN DE SEGURIDAD Y ROBUSTEZ — 2026-11-06
+
+Cambios:
+- Se aplica el límite diario de coste antes de cerrar o reprocesar una sesión.
+- Si falla la liquidación de una reserva de créditos, se intenta liberar y se registra la incidencia.
+- El arranque de reconstrucciones se protege con un bloqueo y una marca de hilo activo en memoria.
+- La restauración individual valida que el backup pertenezca a la cuenta autenticada.
+- Las restauraciones de SQLite sin cifrar preservan el backup plano anterior antes de generar uno nuevo.
+- Se excluye el marcador «Sorpréndeme» de títulos, transcripciones y mensajes visibles.
+- Se unifica el filtro de contexto: el backend filtra y el frontend representa solo los mensajes recibidos.
+- Los límites diarios admiten los valores configurados en el plan, con respaldo al límite global.
+- Se añaden límites de frecuencia a las operaciones de autobiografía y paginación a sesiones/aportaciones.
+- Se corrige la conservación del valor numérico cero al editar bloques de memoria.
+- Las actualizaciones automáticas de cierre y título quedan acotadas por usuario.
+- Se añade estimación de créditos, desglose de reservas y validación de modelos/autopercepción.
+- Se sustituye la salida operativa por logging y se extraen utilidades JavaScript comunes.
+
+Decisiones:
+- Las aportaciones externas siguen excluidas de la reconstrucción de la memoria propia para no mezclar la voz biográfica de la persona protagonista con testimonios de terceros. La FAQ de app.html afirmaba que podían enriquecer la reconstrucción; se ha corregido para dejar claro que son testimonios separados y no se fusionan automáticamente.
+- El límite por sesión ya se aplicaba en /api/mensaje contando respuestas del asistente; el turno iniciado con «Sorpréndeme» también consume una respuesta y queda sujeto al mismo límite.
+
+Verificación:
+- Compilación sintáctica de main.py y de los tests.
+- Comprobación de sintaxis JavaScript de los HTML.
+- Tests pytest añadidos en tests/test_regresiones_creditos.py (requieren requirements-dev.txt).
+
+---
+
 MEMORICORDE — INFORME DE CAMBIOS AL REPROCESAR SESIONES — 2026-10-14
 Base: Memoricorde-reprocesar-sesiones-vista-limpia-2026-10-14.zip.
 
